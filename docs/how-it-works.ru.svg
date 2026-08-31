@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 430" width="1200" height="430" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="430" rx="10" fill="#0d1117"/>
+  <text x="600" y="46" text-anchor="middle" fill="#e6edf3" font-size="26" font-weight="600">Один разговор на любой машине</text>
+
+  <!-- desktop -->
+  <rect x="40" y="78" width="410" height="238" rx="12" fill="#161b22" stroke="#30363d"/>
+  <circle cx="66" cy="106" r="5" fill="#7ee787"/>
+  <text x="82" y="111" fill="#7ee787" font-size="15" font-weight="600">desktop</text>
+  <text x="430" y="111" text-anchor="end" fill="#6e7681" font-size="13">Linux · ~/projects/myapp</text>
+  <line x1="56" y1="126" x2="434" y2="126" stroke="#21262d"/>
+
+  <text x="112" y="158" text-anchor="end" fill="#6e7681" font-size="13">ты</text>
+  <text x="126" y="158" fill="#e6edf3" font-size="15">Добавь офлайн-кэш в слой синхронизации</text>
+  <text x="112" y="196" text-anchor="end" fill="#6e7681" font-size="13">клод</text>
+  <text x="126" y="196" fill="#adbac7" font-size="15">Сложное место — политика повторов…</text>
+  <text x="112" y="234" text-anchor="end" fill="#6e7681" font-size="13">ты</text>
+  <text x="126" y="234" fill="#e6edf3" font-size="15">Упавший батч сохраняем и повторяем</text>
+  <text x="126" y="256" fill="#e6edf3" font-size="15">при восстановлении связи.</text>
+  <text x="66" y="294" fill="#6e7681" font-size="14" font-style="italic">…и выключаешь машину</text>
+
+  <!-- vault -->
+  <path d="M462 197 H545" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <path d="M655 197 H738" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <rect x="545" y="150" width="110" height="94" rx="10" fill="#161b22" stroke="#30363d"/>
+  <text x="600" y="182" text-anchor="middle" font-size="24">🔒</text>
+  <text x="600" y="209" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">твой</text>
+  <text x="600" y="227" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">git-репо</text>
+  <text x="600" y="272" text-anchor="middle" fill="#6e7681" font-size="12">сессии · память</text>
+  <text x="600" y="290" text-anchor="middle" fill="#6e7681" font-size="12">скиллы · MCP · настройки</text>
+
+  <!-- laptop -->
+  <rect x="750" y="78" width="410" height="238" rx="12" fill="#161b22" stroke="#30363d"/>
+  <circle cx="776" cy="106" r="5" fill="#ffa8c5"/>
+  <text x="792" y="111" fill="#ffa8c5" font-size="15" font-weight="600">laptop</text>
+  <text x="1140" y="111" text-anchor="end" fill="#6e7681" font-size="13">macOS · ~/Dev/Мои проекты/myapp</text>
+  <line x1="766" y1="126" x2="1144" y2="126" stroke="#21262d"/>
+
+  <text x="776" y="158" fill="#7ee787" font-size="15" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">$ claude --resume</text>
+  <text x="822" y="196" text-anchor="end" fill="#6e7681" font-size="13">клод</text>
+  <text x="836" y="196" fill="#adbac7" font-size="15">Продолжаю с того же места: упавший</text>
+  <text x="836" y="218" fill="#adbac7" font-size="15">батч повторяется при переподключении.</text>
+  <text x="822" y="256" text-anchor="end" fill="#6e7681" font-size="13">ты</text>
+  <text x="836" y="256" fill="#e6edf3" font-size="15">Верно. Теперь добавь backoff.</text>
+  <text x="776" y="294" fill="#6e7681" font-size="14" font-style="italic">тот же разговор, другие пути, другая ОС</text>
+
+  <text x="600" y="360" text-anchor="middle" fill="#adbac7" font-size="15">Пути внутри транскрипта переписываются под ту машину, которая его открыла.</text>
+  <text x="600" y="388" text-anchor="middle" fill="#6e7681" font-size="14">Ни облачного сервиса, ни включённой машины-источника — десктоп может быть выключен.</text>
+</svg>

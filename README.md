@@ -11,11 +11,7 @@ required.
 
 *[Русская версия](README.ru.md) · [Adding another machine](BOOTSTRAP.md)*
 
-![A session moving from one machine to another](docs/demo.gif)
-
-<sub>Recorded on a single host with two isolated `$HOME`s, which is why both
-machines report the same distro. Everything in the frame is real engine output —
-the scenario lives in `demo/`.</sub>
+![One conversation continuing on another machine](docs/how-it-works.svg)
 
 ---
 
@@ -204,7 +200,14 @@ to be set early to be of any use.
    line.
 
 **Adding your second and further machines:** [BOOTSTRAP.md](BOOTSTRAP.md) — it is
-a prompt you paste into Claude Code on the new machine.
+a prompt you paste into Claude Code on the new machine. That is what it looks
+like there: one command, and the machine has your skills, your memory and
+yesterday's session.
+
+![Pulling everything onto a fresh machine](docs/demo.gif)
+
+<sub>Recorded on one host with two isolated `$HOME`s — the scenario lives in
+`demo/` and every line in the frame is real engine output.</sub>
 
 ## Day to day
 
