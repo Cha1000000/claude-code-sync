@@ -1,0 +1,40 @@
+# Pull requests are not accepted here: this repository is a template people copy,
+# not a project that takes contributions. GitHub cannot disable forks on a public
+# personal repository, so incoming pull requests are closed automatically instead.
+name: Close external pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: github.event.pull_request.user.login != github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const number = context.payload.pull_request.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number,
+              body: [
+                "Thanks for taking the time — but this repository does not accept pull requests.",
+                "",
+                "It is a template you are meant to copy: press **Use this template** and set the",
+                "new repository to **Private**, then change whatever you like in your own copy.",
+                "",
+                "Found a bug or have an idea? Please open an issue instead."
+              ].join("\n")
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+              state: "closed"
+            });
