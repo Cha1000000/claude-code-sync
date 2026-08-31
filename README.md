@@ -136,11 +136,21 @@ copy does not already have.
    python3 ~/claude-code-sync/bin/ccsync.py push all
    ```
 
-6. Paste the block from [docs/claude-md-block.md](docs/claude-md-block.md) into
+6. Install the hooks, then push them too. The installer only adds hook entries to
+   your `settings.json` and leaves everything else alone; `push` then folds the
+   machine-specific paths into `{{PYTHON}}` and `{{VAULT}}`, so the other
+   machines get them expanded for themselves:
+
+   ```bash
+   python3 ~/claude-code-sync/setup-hooks.py
+   python3 ~/claude-code-sync/bin/ccsync.py push tools
+   ```
+
+7. Paste the block from [docs/claude-md-block.md](docs/claude-md-block.md) into
    your `~/.claude/CLAUDE.md`, and ask Claude to give the adopted facts their
    `scope`, `index_title` and `index_hook` fields.
 
-7. Restart Claude Code and check that a session starts with a `[ccsync] Машина: …`
+8. Restart Claude Code and check that a session starts with a `[ccsync] Машина: …`
    line.
 
 **Adding your second and further machines:** [BOOTSTRAP.md](BOOTSTRAP.md) — it is
@@ -197,6 +207,12 @@ tools/tests/run-all.sh
 ```
 
 Worth running once on a new machine, to confirm the engine behaves there.
+
+`tests/fresh-start.sh` checks the template itself rather than the engine: it
+walks two throwaway machines through the whole first-machine flow and back, and
+asserts that nobody's `CLAUDE.md`, settings or skills got overwritten on the way.
+It clones the **committed** state of this repository, so uncommitted edits are
+invisible to it.
 
 ## Limitations, honestly
 

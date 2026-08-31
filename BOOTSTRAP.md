@@ -110,6 +110,19 @@ synced — each machine has its own. Do not copy them from another machine.
 | Hooks | `SessionStart` pulls and prints where you are, `Stop` and `SessionEnd` push |
 | Check | `tools/tests/run-all.sh` — three rigs; worth running once on a fresh machine to confirm the engine works there |
 
+### One thing to know before the first pull
+
+On a machine that already has a `~/.claude/settings.json`, the first `pull`
+**replaces** it with the shared one rather than merging: the three-way merge that
+protects your local keys needs a baseline to compare against, and that baseline
+only exists from the second pull onwards. The previous file is kept next to it as
+`settings.json.bak`, and nothing else is touched.
+
+So if this machine has settings worth keeping (a different model, a theme, an
+extra hook), open `settings.json.bak` afterwards, move what you want back into
+`settings.json`, and run `ccsync.py push tools` — from then on your machines
+share one set of settings and local edits survive every pull.
+
 ## Per-OS notes
 
 **Windows.** Both native and WSL are supported; choose by where your code lives,
