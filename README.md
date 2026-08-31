@@ -11,6 +11,12 @@ required.
 
 *[Русская версия](README.ru.md) · [Adding another machine](BOOTSTRAP.md)*
 
+![A session moving from one machine to another](docs/demo.gif)
+
+<sub>Recorded on a single host with two isolated `$HOME`s, which is why both
+machines report the same distro. Everything in the frame is real engine output —
+the scenario lives in `demo/`.</sub>
+
 ---
 
 > ### ⚠️ Do not use this repository directly
@@ -93,6 +99,50 @@ variables to add.
 files next to them. Bind the project later with `/sync-bind` and the old layout
 is cleaned up on the next pull, but only once nothing is left in it that the new
 copy does not already have.
+
+## Why not just a synced folder
+
+**Dropbox, iCloud, a synced folder.** Claude Code writes to the transcript after
+every reply, so two machines produce a steady stream of conflicts — and such
+folders resolve them by last-writer-wins, which quietly loses turns. That is the
+smaller problem. The bigger one is that a transcript is full of absolute paths
+from the machine that wrote it; copying the bytes does not make them valid
+anywhere else.
+
+**rsync or scp by hand.** Same path problem, plus you have to remember what to
+copy and when, in both directions, with no history and nothing to roll back to.
+
+**A dotfiles repository.** Solves settings and skills, and stops there: no
+sessions, no path rewriting, and no way to say “this fact is about the laptop
+only” — machine-specific notes spread to every machine and mislead the agent.
+
+**Remote control into the other machine.** Requires that machine to be running
+and reachable. This is the opposite trade: everything is asynchronous, and the
+machine you left can be shut down, reinstalled, or on a plane.
+
+**Just git over `~/.claude`.** It is hundreds of megabytes of live state —
+plugin caches, shell snapshots, credentials — rewritten while you work, with
+absolute paths baked into `settings.json` and the MCP config. That repository
+conflicts on every pull and leaks secrets on the first push.
+
+## What leaves your machine, and what never does
+
+Everything lives in **your own private repository**; nothing is sent anywhere
+else, and the engine talks to no service but your git remote.
+
+| Synced | Never synced |
+|---|---|
+| Session transcripts, with paths tokenized | `.credentials.json` and OAuth tokens (on macOS they are in Keychain anyway) |
+| Memory facts, each scoped | `ccsync-machine.json` — this machine's identity |
+| Skills, commands, hooks, plans | `ccsync-secrets.env` — your tokens, git-ignored |
+| MCP definitions, secrets replaced by `{{ENV:NAME}}` | Plugin caches, shell snapshots, `history.jsonl` |
+| The plugin list and merged `settings.json` | Anything you mark with `/sync-ignore` |
+
+Two things worth knowing before you trust it with real work. A transcript that
+has already been pushed is removed by `/sync-forget`, but that is an ordinary
+commit — **git history is not rewritten**, so clones made earlier still hold the
+old commits. And the `Stop` hook pushes every few minutes, so `/sync-ignore` has
+to be set early to be of any use.
 
 ## Requirements
 
