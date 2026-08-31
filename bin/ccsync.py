@@ -488,12 +488,15 @@ def _pull_sessions(context: Context, args) -> None:
 		if not directory.is_dir() or directory.name in RESERVED_SESSION_DIRS:
 			continue
 		key = directory.name
-		local_path = _resolve_or_bind(context, key, args)
+		local_path, is_bound = _resolve_or_bind(context, key, args)
 		target = sessions.local_session_dir(context.config_dir, local_path)
 		Path(local_path).mkdir(parents=True, exist_ok=True)
 		report = sessions.pull_sessions(directory, target, mapper, local_path)
 		if report.moved:
-			bound = "" if mapper.is_bound(key) else tr(
+			# Спрашиваем не mapper: он собран до цикла и про привязку, сделанную
+			# только что автопоиском, ещё не знает — вышло бы «найден и привязан»
+			# и следом «НЕ привязан» про один и тот же проект.
+			bound = "" if is_bound else tr(
 				"  ← проект НЕ привязан, файлов проекта нет")
 			context.say(tr("[ccsync] сессии {key}: {count} → {path}{bound}",
 						   key=key, count=len(report.moved),
@@ -522,19 +525,23 @@ def _report_stale(context: Context, stale: int) -> None:
 		context.say(tr("[ccsync] убрано прежних раскладок: {count}", count=stale))
 
 
-def _resolve_or_bind(context: Context, key: str, args) -> str:
-	"""Три ступени: привязка есть → автопоиск → вопрос → fallback."""
+def _resolve_or_bind(context: Context, key: str, args) -> tuple[str, bool]:
+	"""Три ступени: привязка есть → автопоиск → вопрос → fallback.
+
+	Возвращает путь и признак того, привязан ли проект: только fallback даёт
+	каталог, рядом с которым нет файлов проекта.
+	"""
 	machine = context.require_machine()
 	bound = context.vault.paths_for_machine(machine.machine_id).get(key)
 	if bound:
-		return bound
+		return bound, True
 
 	candidates = find_candidates(key, machine)
 	if len(candidates) == 1 and not args.no_autobind:
 		context.vault.bind(key, machine.machine_id, candidates[0])
 		context.say(tr("[ccsync] проект {key} найден и привязан: {path}",
 					   key=key, path=candidates[0]))
-		return candidates[0]
+		return candidates[0], True
 
 	interactive = sys.stdin.isatty() and not context.quiet and not args.no_autobind
 	if interactive:
@@ -548,10 +555,10 @@ def _resolve_or_bind(context: Context, key: str, args) -> str:
 			answer = candidates[int(answer) - 1]
 		if answer:
 			context.vault.bind(key, machine.machine_id, answer)
-			return answer
+			return answer, True
 
 	fallback = str(Path(machine.home) / "claude-sessions" / key)
-	return fallback
+	return fallback, False
 
 
 # --- не синхронизировать / забыть ---------------------------------------
