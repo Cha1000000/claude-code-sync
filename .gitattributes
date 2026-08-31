@@ -1,0 +1,7 @@
+# Транскрипты append-only: при конфликте склеиваем обе версии, а не падаем
+sessions/**/*.jsonl merge=union
+# Явно текстовые, чтобы git не решил, что это бинарь
+*.jsonl text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.py text eol=lf

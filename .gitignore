@@ -1,0 +1,12 @@
+# Локальное для каждой машины — никогда не синхронизируется
+ccsync-machine.json
+ccsync-secrets.env
+ccsync-ignore.json
+*.local
+__pycache__/
+*.pyc
+.DS_Store
+
+# Производный файл: пересобирается из memory/facts на каждой машине.
+# В git не хранится — иначе два новых факта на разных машинах дают конфликт.
+memory/index.md
