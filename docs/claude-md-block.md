@@ -22,7 +22,7 @@ systems, and the list is open-ended.
 
 ## Where you are right now
 
-At the start of every session a hook prints a `[ccsync] Машина: …` block.
+At the start of every session a hook prints a `[ccsync] Machine: …` block.
 **That is the answer to "which machine is this".** Do not work it out again
 from `uname`, `hostname` or the contents of directories — read it from that
 block. The machine's passport lives in `~/.claude/ccsync-machine.json` and

@@ -150,7 +150,7 @@ copy does not already have.
    your `~/.claude/CLAUDE.md`, and ask Claude to give the adopted facts their
    `scope`, `index_title` and `index_hook` fields.
 
-8. Restart Claude Code and check that a session starts with a `[ccsync] Машина: …`
+8. Restart Claude Code and check that a session starts with a `[ccsync] Machine: …`
    line.
 
 **Adding your second and further machines:** [BOOTSTRAP.md](BOOTSTRAP.md) — it is
@@ -196,6 +196,25 @@ installs it automatically — copy it to `~/.claude/statusline.py` and add to yo
 "statusLine": { "type": "command", "command": "python3 ~/.claude/statusline.py", "padding": 0 }
 ```
 
+## Language
+
+The engine picks its language from `CCSYNC_LANG`, falling back to your locale
+(`LC_ALL` / `LC_MESSAGES` / `LANG`) and then to English. English and Russian ship
+with it:
+
+```bash
+CCSYNC_LANG=en python3 ~/claude-code-sync/bin/ccsync.py status
+```
+
+Adding your own is a JSON file and nothing else — copy
+`bin/ccsync_lib/locales/en.json` to `<your-language>.json` and translate the
+values; the keys are the original Russian strings the engine was written in. A
+string with no translation falls back to that original rather than breaking, and
+`tests/i18n-coverage.py` lists whatever is still missing.
+
+Code comments stay in Russian: they are internal, and they do not stand between
+you and the tool.
+
 ## Verifying
 
 Three test rigs cover the engine — private sessions, registries diverging between
@@ -208,16 +227,16 @@ tools/tests/run-all.sh
 
 Worth running once on a new machine, to confirm the engine behaves there.
 
-`tests/fresh-start.sh` checks the template itself rather than the engine: it
-walks two throwaway machines through the whole first-machine flow and back, and
-asserts that nobody's `CLAUDE.md`, settings or skills got overwritten on the way.
-It clones the **committed** state of this repository, so uncommitted edits are
-invisible to it.
+`tests/run-all.sh` checks the template itself rather than the engine:
+`fresh-start.sh` walks two throwaway machines through the whole first-machine
+flow and back, asserting that nobody's `CLAUDE.md`, settings or skills got
+overwritten on the way; `i18n-english.sh` runs every command with
+`CCSYNC_LANG=en` and fails on any Cyrillic left in the output. Both clone the
+**committed** state of this repository, so uncommitted edits are invisible to
+them.
 
 ## Limitations, honestly
 
-- **The engine speaks Russian.** Console output and code comments are in Russian;
-  documentation and the slash commands are in English. Localization is planned.
 - **Keep Claude Code versions close** across machines: the transcript format
   changes between releases, and an older build may not read a newer session.
 - **One session at a time.** Working in the same session on two machines

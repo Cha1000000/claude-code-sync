@@ -83,17 +83,16 @@ me the result of each one.
        python3 ~/claude-code-sync/bin/ccsync.py machines
        python3 ~/claude-code-sync/bin/ccsync.py mcp
    The last one shows the MCP servers and their state here. A server marked
-   "НЕ ЗАПУСТИТСЯ" ("will not start") either gets installed or gets marked as
-   not needed on this machine: `ccsync.py mcp scope <name> --not-here`.
+   "WILL NOT START" either gets installed or gets marked as not needed on this
+   machine: `ccsync.py mcp scope <name> --not-here`.
    Confirm separately that ~/.claude now has the skills, commands, hooks and
-   plans symlinks, and that MEMORY.md has a "Про эту машину" ("this machine")
-   section — empty at first, which is normal; facts about this machine appear
-   later.
+   plans symlinks, and that MEMORY.md has an "About this machine" section —
+   empty at first, which is normal; facts about this machine appear later.
    Compare the Claude Code version with the other machines — `machines` prints
    it for each, and `status` warns if one of them is newer than this.
 
 10. Restart Claude Code so the hooks are picked up, and check that a new session
-   starts with a [ccsync] Машина: ... block.
+   starts with a [ccsync] Machine: ... block.
 
 Note: ~/.claude/ccsync-machine.json and ~/.claude/ccsync-secrets.env are never
 synced — each machine has its own. Do not copy them from another machine.
@@ -142,7 +141,8 @@ What was done so the native path works without caveats:
   and where unavailable copies are used — `push` then collects edits back out of
   those copies, so a skill added on such a machine is not lost.
 - Separators and drive letters (`D:\Projects\…`) are handled when sessions move.
-- Output is switched to UTF-8, otherwise the Windows console trips over Cyrillic.
+- Output is switched to UTF-8, otherwise the Windows console trips over
+  non-ASCII characters.
 
 **Choose WSL** if on this machine you mostly talk to Claude and make small edits:
 then `$HOME` matches the Linux one and the machine behaves like any Ubuntu

@@ -16,8 +16,8 @@ useful — especially about operating systems this has seen less of. When report
 a bug, the helpful details are:
 
 - your OS and how Claude Code is installed;
-- what you ran and what it printed (the engine's output is in Russian — paste it
-  as is);
+- what you ran and what it printed (run it with `CCSYNC_LANG=en` so the output is
+  in English);
 - whether `tools/tests/run-all.sh` passes on your machine.
 
 Do not paste session transcripts, memory files or anything from your
