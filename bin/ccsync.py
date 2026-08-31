@@ -1040,7 +1040,8 @@ def build_parser() -> argparse.ArgumentParser:
 	init.add_argument("--yes", action="store_true", help=tr("без вопросов"))
 	init.set_defaults(func=cmd_init)
 
-	for name, func, help_text in (("push", cmd_push, "отдать своё"), ("pull", cmd_pull, "принять чужое")):
+	for name, func, help_text in (("push", cmd_push, tr("отдать своё")),
+								  ("pull", cmd_pull, tr("принять чужое"))):
 		sub = subparsers.add_parser(name, help=help_text)
 		sub.add_argument("what", nargs="?", default="all", choices=["all", "tools", "memory", "session"])
 		sub.add_argument("--session", help=tr("id сессии (по умолчанию — самая свежая в этом каталоге)"))
