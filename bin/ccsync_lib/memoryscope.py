@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import scopes
+from .i18n import tr
 from .identity import Machine
 from .scopes import OS_PREFIX, SCOPE_GLOBAL  # noqa: F401 — прежние имена модуля
 
@@ -138,26 +139,28 @@ def render_local_index(facts: list[Fact], machine: Machine, link_prefix: str = "
 			foreign.append(fact)
 
 	lines = [
-		f"# Memory index — машина: {machine.machine_id} ({machine.distro})",
+		tr("# Memory index — машина: {id} ({distro})",
+		   id=machine.machine_id, distro=machine.distro),
 		"",
-		"<!-- Файл собирается автоматически (ccsync pull). Правки сюда вносить бесполезно:",
-		"     заголовок и хук факта живут в его frontmatter (index_title / index_hook),",
-		"     а принадлежность машине — в metadata.scope. -->",
+		tr("<!-- Файл собирается автоматически (ccsync pull). Правки сюда вносить бесполезно:\n"
+		   "     заголовок и хук факта живут в его frontmatter (index_title / index_hook),\n"
+		   "     а принадлежность машине — в metadata.scope. -->"),
 		"",
 	]
 	if shared:
-		lines += ["## Общее (верно на всех машинах)", ""]
+		lines += [tr("## Общее (верно на всех машинах)"), ""]
 		lines += [_index_line(f, link_prefix) for f in shared] + [""]
 	if own:
-		lines += [f"## Про эту машину ({machine.machine_id})", ""]
+		lines += [tr("## Про эту машину ({id})", id=machine.machine_id), ""]
 		lines += [_index_line(f, link_prefix) for f in own] + [""]
 	if foreign:
-		lines += ["## Другие машины — НЕ применять здесь без проверки", ""]
+		lines += [tr("## Другие машины — НЕ применять здесь без проверки"), ""]
 		for machine_id, count in _count_by_machine(foreign).items():
-			lines.append(f"- **{machine_id}**: {count} фактов")
+			lines.append(tr("- **{id}**: {count} фактов", id=machine_id, count=count))
 		lines += [
 			"",
-			f"Файлы лежат рядом ({link_prefix or './'}), читать по прямому запросу.",
+			tr("Файлы лежат рядом ({path}), читать по прямому запросу.",
+			   path=link_prefix or "./"),
 			"",
 		]
 	return "\n".join(lines).rstrip() + "\n"
@@ -182,12 +185,12 @@ def _count_by_machine(facts: list[Fact]) -> dict[str, int]:
 def render_full_index(facts: list[Fact]) -> str:
 	"""Полный индекс для просмотра репозитория человеком (memory/index.md)."""
 	lines = [
-		"# Все факты памяти",
+		tr("# Все факты памяти"),
 		"",
-		"Сводка по репозиторию. На каждой машине Claude Code видит свой срез —",
-		"его собирает `ccsync pull` в локальный MEMORY.md по полю `metadata.scope`.",
+		tr("Сводка по репозиторию. На каждой машине Claude Code видит свой срез —\n"
+		   "его собирает `ccsync pull` в локальный MEMORY.md по полю `metadata.scope`."),
 		"",
-		"| Факт | Тип | Scope |",
+		tr("| Факт | Тип | Scope |"),
 		"|---|---|---|",
 	]
 	for fact in facts:

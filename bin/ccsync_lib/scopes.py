@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+from .i18n import tr
 from .identity import Machine
 
 SCOPE_GLOBAL = "global"
@@ -109,5 +110,5 @@ def without_machine(scope: list[str], machine: Machine) -> list[str]:
 def describe(scope: list[str], machine: Machine) -> str:
 	"""Короткое пояснение для человека, зачем сервер здесь есть или нет."""
 	if matches(scope, machine):
-		return "применим здесь"
-	return "не для этой машины"
+		return tr("применим здесь")
+	return tr("не для этой машины")

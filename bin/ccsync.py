@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ccsync_lib import (conflicts, identity, ignore, memoryscope,
                         migrate_registry, scopes, sessions, tools)
 from ccsync_lib.gitutil import Git
+from ccsync_lib.i18n import tr
 from ccsync_lib.paths import PathMapper
 from ccsync_lib.vault import (RESERVED_SESSION_DIRS, Vault, find_candidates,
                               project_key_from_path)
@@ -85,35 +86,36 @@ class Context:
 def cmd_init(context: Context, args) -> int:
 	existing = identity.load_machine()
 	if existing and not args.force:
-		print(f"Машина уже настроена: {existing.describe()}")
-		print("Перенастроить — с флагом --force")
+		print(tr("Машина уже настроена: {machine}", machine=existing.describe()))
+		print(tr("Перенастроить — с флагом --force"))
 		return 0
 
 	suggested = args.id or identity.suggest_machine_id()
 	machine_id = suggested
 	if not args.yes and sys.stdin.isatty():
-		answer = input(f"Идентификатор этой машины [{suggested}]: ").strip()
+		answer = input(tr("Идентификатор этой машины [{suggested}]: ",
+						 suggested=suggested)).strip()
 		machine_id = answer or suggested
 	note = args.note
 	if not args.yes and sys.stdin.isatty() and not note:
-		note = input("Короткая заметка о машине (можно пусто): ").strip()
+		note = input(tr("Короткая заметка о машине (можно пусто): ")).strip()
 
 	machine = identity.build_machine(machine_id, note)
 	path = identity.save_machine(machine)
 	migrate_registry.migrate(context.vault)
 	context.vault.register_machine(machine)
-	print(f"Паспорт машины: {path}")
+	print(tr("Паспорт машины: {path}", path=path))
 	print(f"  {machine.describe()}")
 
 	secrets_path = identity.secrets_file_path()
 	if not secrets_path.exists():
 		secrets_path.write_text(
-			"# Локальные секреты этой машины. В git не попадают (см. .gitignore).\n"
-			"# Формат:  ИМЯ_ПЕРЕМЕННОЙ=значение\n"
-			"# Пример:  GITHUB_PERSONAL_ACCESS_TOKEN=gho_xxx\n",
+			tr("# Локальные секреты этой машины. В git не попадают (см. .gitignore).\n"
+			   "# Формат:  ИМЯ_ПЕРЕМЕННОЙ=значение\n"
+			   "# Пример:  GITHUB_PERSONAL_ACCESS_TOKEN=gho_xxx\n"),
 			encoding="utf-8",
 		)
-		print(f"Файл для секретов: {secrets_path}")
+		print(tr("Файл для секретов: {path}", path=secrets_path))
 	return 0
 
 
@@ -123,7 +125,8 @@ def cmd_push(context: Context, args) -> int:
 	machine = context.require_machine()
 	what = args.what
 	if args.debounce and _debounced(context, args.debounce):
-		context.say(f"[ccsync] push пропущен (дебаунс {args.debounce} с)")
+		context.say(tr("[ccsync] push пропущен (дебаунс {seconds} с)",
+					   seconds=args.debounce))
 		return 0
 
 	if not _pull_and_settle(context):
@@ -142,18 +145,19 @@ def cmd_push(context: Context, args) -> int:
 		done.extend(_push_session(context, args, mapper))
 
 	if not done:
-		context.say("[ccsync] нечего отдавать")
+		context.say(tr("[ccsync] нечего отдавать"))
 		return 0
 
 	message = f"sync from {machine.machine_id}: " + ", ".join(done)
 	commit = context.git.commit_all(message)
-	context.say(f"[ccsync] {commit.out or commit.err or 'коммит создан'}")
+	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	push = context.git.push()
 	if not push.ok:
-		print(f"[ccsync] push не прошёл: {push.err or push.out}", file=sys.stderr)
+		print(tr("[ccsync] push не прошёл: {error}", error=push.err or push.out),
+			  file=sys.stderr)
 		return 1
 	_stamp_push(context)
-	context.say("[ccsync] отправлено")
+	context.say(tr("[ccsync] отправлено"))
 	return 0
 
 
@@ -181,16 +185,19 @@ def _pull_and_settle(context: Context) -> bool:
 		resolved, remaining = conflicts.resolve_json_conflicts(context.git)
 		if remaining or not resolved:
 			break
-		context.say("[ccsync] конфликт слит автоматически: " + ", ".join(resolved))
+		context.say(tr("[ccsync] конфликт слит автоматически: {files}",
+					   files=", ".join(resolved)))
 		context.git.rebase_continue()
 
 	if not context.git.rebase_in_progress():
 		return True
 	stuck = context.git.conflicted_files()
-	print("[ccsync] конфликт, который нельзя слить автоматически: "
-		  + (", ".join(stuck) if stuck else "неизвестно где"), file=sys.stderr)
-	print(f"[ccsync]   разбери его в {context.root}: git status; "
-		  "вернуться назад — git rebase --abort", file=sys.stderr)
+	print(tr("[ccsync] конфликт, который нельзя слить автоматически: {files}",
+			 files=", ".join(stuck) if stuck else tr("неизвестно где")),
+		  file=sys.stderr)
+	print(tr("[ccsync]   разбери его в {root}: git status; "
+			 "вернуться назад — git rebase --abort", root=context.root),
+		  file=sys.stderr)
 	return False
 
 
@@ -266,10 +273,11 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 	# уже нет на месте, и стоит дешевле любой работы с диском.
 	ignored = ignore.IgnoreList.for_config(context.config_dir)
 	if ignored.is_ignored(session_id):
-		context.say(f"[ccsync] сессия {session_id[:8]} помечена как не синхронизируемая — пропускаю")
+		context.say(tr("[ccsync] сессия {id} помечена как не синхронизируемая — пропускаю",
+					   id=session_id[:8]))
 		return []
 	if transcript is None:
-		context.say("[ccsync] активная сессия не найдена — пропускаю")
+		context.say(tr("[ccsync] активная сессия не найдена — пропускаю"))
 		return []
 	# Ключ определяет каталог, где сессия была запущена, а не текущий рабочий:
 	# Клод мог перейти в другой проект, но транскрипт остался на месте. Возьми
@@ -287,7 +295,8 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 		max_bytes=args.max_mb * 1024 * 1024,
 	)
 	for name, reason in report.skipped:
-		print(f"[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}", file=sys.stderr)
+		print(tr("[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}",
+				 name=name, reason=reason), file=sys.stderr)
 	return [f"session {key}/{transcript.stem[:8]}"] if report.moved else []
 
 
@@ -384,21 +393,25 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 			# Реальный каталог на месте симлинка — это работа для `adopt`.
 			merged = tools.merge_tree(source, config / name)
 			if merged:
-				context.say(f"[ccsync] {name}: обновлено файлов {merged} (без симлинка; см. `ccsync adopt`)")
+				context.say(tr("[ccsync] {name}: обновлено файлов {count} "
+							   "(без симлинка; см. `ccsync adopt`)",
+							   name=name, count=merged))
 
 	for name in tools.COPIED_FILES:
 		source = vault.tools_dir / name
 		target = config / name
 		if source.exists() and (not target.exists() or source.read_bytes() != target.read_bytes()):
 			target.write_bytes(source.read_bytes())
-			context.say(f"[ccsync] {name}: обновлён")
+			context.say(tr("[ccsync] {name}: обновлён", name=name))
 
 	try:
 		if tools.apply_settings(vault.tools_dir / "settings.template.json", config, mapper,
 								sys.executable, context.root, context.require_machine().os):
-			context.say("[ccsync] settings.json обновлён (прежний — в settings.json.bak)")
+			context.say(tr("[ccsync] settings.json обновлён "
+						   "(прежний — в settings.json.bak)"))
 	except ValueError as error:
-		print(f"[ccsync] настройки не применены: {error}", file=sys.stderr)
+		print(tr("[ccsync] настройки не применены: {error}", error=error),
+			  file=sys.stderr)
 
 	report = tools.apply_mcp(
 		vault.tools_dir / "mcp-servers.template.json",
@@ -412,26 +425,30 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 	if report.applied:
 		context.say("[ccsync] MCP: " + ", ".join(report.applied))
 	if report.removed:
-		context.say("[ccsync] MCP убраны (не для этой машины): " + ", ".join(report.removed))
+		context.say(tr("[ccsync] MCP убраны (не для этой машины): {names}",
+					   names=", ".join(report.removed)))
 	for name in report.kept_modified:
-		context.say(
-			f"[ccsync] MCP {name} помечен как не для этой машины, но правлен здесь руками "
-			f"— оставлен. Убрать: claude mcp remove {name} -s user")
+		context.say(tr(
+			"[ccsync] MCP {name} помечен как не для этой машины, но правлен здесь руками "
+			"— оставлен. Убрать: claude mcp remove {name} -s user", name=name))
 	for name, problem in report.unusable:
-		context.say(f"[ccsync] MCP {name} здесь не запустится: {problem}")
-		context.say(
-			f"[ccsync]   если он не нужен на этой машине: "
-			f"{_ccsync_hint()} mcp scope {name} --not-here")
+		context.say(tr("[ccsync] MCP {name} здесь не запустится: {problem}",
+					   name=name, problem=problem))
+		context.say(tr(
+			"[ccsync]   если он не нужен на этой машине: "
+			"{command} mcp scope {name} --not-here",
+			command=_ccsync_hint(), name=name))
 	if report.missing_secrets:
-		print(
-			"[ccsync] не хватает секретов в "
-			f"{identity.secrets_file_path()}: {', '.join(report.missing_secrets)}",
-			file=sys.stderr,
-		)
+		print(tr("[ccsync] не хватает секретов в {path}: {names}",
+				 path=identity.secrets_file_path(),
+				 names=", ".join(report.missing_secrets)),
+			  file=sys.stderr)
 	absent = tools.missing_plugins(vault.tools_dir / "plugins.json", config)
 	if absent:
-		context.say("[ccsync] плагины не установлены здесь: " + ", ".join(absent))
-		context.say("[ccsync]   поставить: claude plugin install " + " ".join(absent))
+		context.say(tr("[ccsync] плагины не установлены здесь: {names}",
+					   names=", ".join(absent)))
+		context.say(tr("[ccsync]   поставить: claude plugin install {names}",
+					   names=" ".join(absent)))
 
 
 def _pull_memory(context: Context, machine: identity.Machine) -> None:
@@ -457,7 +474,8 @@ def _pull_memory(context: Context, machine: identity.Machine) -> None:
 	(memory_dir / "MEMORY.md").write_text(index, encoding="utf-8")
 	own = sum(1 for f in facts if f.applies_to(machine) and not f.is_global)
 	shared = sum(1 for f in facts if f.is_global)
-	context.say(f"[ccsync] память: своих {own}, общих {shared}, всего {len(facts)}")
+	context.say(tr("[ccsync] память: своих {own}, общих {shared}, всего {total}",
+				   own=own, shared=shared, total=len(facts)))
 
 
 def _pull_sessions(context: Context, args) -> None:
@@ -475,8 +493,11 @@ def _pull_sessions(context: Context, args) -> None:
 		Path(local_path).mkdir(parents=True, exist_ok=True)
 		report = sessions.pull_sessions(directory, target, mapper, local_path)
 		if report.moved:
-			bound = "" if mapper.is_bound(key) else "  ← проект НЕ привязан, файлов проекта нет"
-			context.say(f"[ccsync] сессии {key}: {len(report.moved)} → {local_path}{bound}")
+			bound = "" if mapper.is_bound(key) else tr(
+				"  ← проект НЕ привязан, файлов проекта нет")
+			context.say(tr("[ccsync] сессии {key}: {count} → {path}{bound}",
+						   key=key, count=len(report.moved),
+						   path=local_path, bound=bound))
 
 		# Проект мог сменить место: пока он не был привязан, сессии лежали в
 		# ~/claude-sessions/<ключ>. После привязки прежняя раскладка осталась бы
@@ -490,14 +511,15 @@ def _pull_sessions(context: Context, args) -> None:
 			)
 			stale += len(removed)
 			for path in spared:
-				context.say(f"[ccsync] прежняя копия {transcript.stem[:8]} оставлена: "
-							f"в ней есть свои записи — {path}")
+				context.say(tr("[ccsync] прежняя копия {id} оставлена: "
+							   "в ней есть свои записи — {path}",
+							   id=transcript.stem[:8], path=path))
 	_report_stale(context, stale)
 
 
 def _report_stale(context: Context, stale: int) -> None:
 	if stale:
-		context.say(f"[ccsync] убрано прежних раскладок: {stale}")
+		context.say(tr("[ccsync] убрано прежних раскладок: {count}", count=stale))
 
 
 def _resolve_or_bind(context: Context, key: str, args) -> str:
@@ -510,16 +532,18 @@ def _resolve_or_bind(context: Context, key: str, args) -> str:
 	candidates = find_candidates(key, machine)
 	if len(candidates) == 1 and not args.no_autobind:
 		context.vault.bind(key, machine.machine_id, candidates[0])
-		context.say(f"[ccsync] проект {key} найден и привязан: {candidates[0]}")
+		context.say(tr("[ccsync] проект {key} найден и привязан: {path}",
+					   key=key, path=candidates[0]))
 		return candidates[0]
 
 	interactive = sys.stdin.isatty() and not context.quiet and not args.no_autobind
 	if interactive:
 		if candidates:
-			context.say(f"[ccsync] кандидаты для {key}:")
+			context.say(tr("[ccsync] кандидаты для {key}:", key=key))
 			for index, path in enumerate(candidates, 1):
 				context.say(f"   {index}) {path}")
-		answer = input(f"Путь к проекту «{key}» на этой машине (Enter — пропустить): ").strip()
+		answer = input(tr("Путь к проекту «{key}» на этой машине "
+						  "(Enter — пропустить): ", key=key)).strip()
 		if answer.isdigit() and candidates and 1 <= int(answer) <= len(candidates):
 			answer = candidates[int(answer) - 1]
 		if answer:
@@ -553,34 +577,38 @@ def cmd_ignore(context: Context, args) -> int:
 
 	if args.list:
 		if not ignored.entries:
-			print("Помеченных сессий нет.")
+			print(tr("Помеченных сессий нет."))
 			return 0
-		print(f"Не синхронизируются ({len(ignored.entries)}):")
+		print(tr("Не синхронизируются ({count}):", count=len(ignored.entries)))
 		for entry in sorted(ignored.entries.values(), key=lambda e: e.marked_at):
 			print(f"  {entry.describe()}")
 		return 0
 
 	if args.undo:
 		if ignored.unmark(args.undo):
-			print(f"Пометка снята: {args.undo[:8]} — сессия снова синхронизируется.")
+			print(tr("Пометка снята: {id} — сессия снова синхронизируется.",
+					 id=args.undo[:8]))
 			return 0
-		print(f"Сессия {args.undo[:8]} и не была помечена.", file=sys.stderr)
+		print(tr("Сессия {id} и не была помечена.", id=args.undo[:8]),
+			  file=sys.stderr)
 		return 1
 
 	session_id, _transcript, key = _session_target(context, args)
 	if not session_id:
-		print("Не понял, какую сессию помечать. Укажи --session <id>.", file=sys.stderr)
+		print(tr("Не понял, какую сессию помечать. Укажи --session <id>."),
+			  file=sys.stderr)
 		return 2
 
 	ignored.mark(session_id, reason=args.reason, project_key=key)
-	print(f"Сессия {session_id[:8]} ({key}) больше не уедет в хранилище.")
+	print(tr("Сессия {id} ({key}) больше не уедет в хранилище.",
+			 id=session_id[:8], key=key))
 
 	copy_in_vault = _vault_copy(context, session_id)
 	if copy_in_vault is not None:
 		# Обычный случай для давно идущей сессии: Stop-хук успел отправить её
 		# задолго до того, как ты решил её скрыть.
-		print("ВНИМАНИЕ: копия уже лежит в хранилище — пометка её не удаляет.")
-		print(f"  Убрать везде:  /sync-forget {session_id}")
+		print(tr("ВНИМАНИЕ: копия уже лежит в хранилище — пометка её не удаляет."))
+		print(tr("  Убрать везде:  /sync-forget {id}", id=session_id))
 	return 0
 
 
@@ -589,13 +617,15 @@ def cmd_forget(context: Context, args) -> int:
 	ignored = ignore.IgnoreList.for_config(context.config_dir)
 	session_id, transcript, key = _session_target(context, args)
 	if not session_id:
-		print("Не понял, какую сессию забывать. Укажи --session <id>.", file=sys.stderr)
+		print(tr("Не понял, какую сессию забывать. Укажи --session <id>."),
+			  file=sys.stderr)
 		return 2
 
 	if not args.yes and sys.stdin.isatty():
-		answer = input(f"Забыть сессию {session_id[:8]} ({key}) — везде и навсегда? [y/N] ").strip().lower()
+		answer = input(tr("Забыть сессию {id} ({key}) — везде и навсегда? [y/N] ",
+						  id=session_id[:8], key=key)).strip().lower()
 		if answer not in ("y", "yes", "д", "да"):
-			print("Отменено.")
+			print(tr("Отменено."))
 			return 0
 
 	alive = session_id == ignore.current_session_id()
@@ -616,26 +646,27 @@ def cmd_forget(context: Context, args) -> int:
 	if copy_in_vault is not None:
 		try:
 			copy_in_vault.unlink()
-			done.append("копия удалена из хранилища")
+			done.append(tr("копия удалена из хранилища"))
 		except OSError as error:
-			print(f"[ccsync] не удалось удалить {copy_in_vault}: {error}", file=sys.stderr)
+			print(tr("[ccsync] не удалось удалить {path}: {error}",
+					 path=copy_in_vault, error=error), file=sys.stderr)
 	else:
-		done.append("в хранилище копии не было")
+		done.append(tr("в хранилище копии не было"))
 
 	ignore.write_tombstone(context.vault.sessions_dir, session_id, key, machine.machine_id)
-	done.append("отметка для других машин поставлена")
+	done.append(tr("отметка для других машин поставлена"))
 
 	# Копий может быть несколько: та, что ведёт Claude Code, и разложенные из
 	# хранилища. Забыть — значит убрать все, иначе сессия всплывёт в /resume.
 	copies = ignore.find_local_transcripts(sessions.projects_root(context.config_dir), session_id)
 	if not delete_local:
-		done.append("локальный файл оставлен (--keep-local)")
+		done.append(tr("локальный файл оставлен (--keep-local)"))
 	elif not copies:
-		done.append("локального файла нет")
+		done.append(tr("локального файла нет"))
 	elif alive:
 		# Удалять сейчас бесполезно: Claude Code пишет в этот файл и создаст
 		# его заново. Уборку сделает хук при закрытии сессии.
-		done.append("локальный файл будет удалён после закрытия этой сессии")
+		done.append(tr("локальный файл будет удалён после закрытия этой сессии"))
 	else:
 		removed = 0
 		for copy in copies:
@@ -643,19 +674,22 @@ def cmd_forget(context: Context, args) -> int:
 				copy.unlink()
 				removed += 1
 			except OSError as error:
-				print(f"[ccsync] не удалось удалить {copy}: {error}", file=sys.stderr)
+				print(tr("[ccsync] не удалось удалить {path}: {error}",
+						 path=copy, error=error), file=sys.stderr)
 		if removed:
-			done.append(f"локальных файлов удалено: {removed}")
+			done.append(tr("локальных файлов удалено: {count}", count=removed))
 
 	message = f"forget session {key}/{session_id[:8]} (from {machine.machine_id})"
 	commit = context.git.commit_all(message)
-	context.say(f"[ccsync] {commit.out or commit.err or 'коммит создан'}")
+	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	push = context.git.push()
 	if not push.ok:
-		print(f"[ccsync] push не прошёл: {push.err or push.out}", file=sys.stderr)
-		print("[ccsync] другие машины узнают об удалении после успешного push", file=sys.stderr)
+		print(tr("[ccsync] push не прошёл: {error}", error=push.err or push.out),
+			  file=sys.stderr)
+		print(tr("[ccsync] другие машины узнают об удалении после успешного push"),
+			  file=sys.stderr)
 
-	print(f"Сессия {session_id[:8]} ({key}) забыта:")
+	print(tr("Сессия {id} ({key}) забыта:", id=session_id[:8], key=key))
 	for line in done:
 		print(f"  · {line}")
 	return 0 if push.ok else 1
@@ -690,10 +724,12 @@ def _apply_tombstones(context: Context) -> None:
 			removed += len(copies)
 		ignore.ack(context.vault.sessions_dir, stone.session_id, machine.machine_id)
 	if removed:
-		context.say(f"[ccsync] забытые сессии: удалено локальных копий {removed}")
+		context.say(tr("[ccsync] забытые сессии: удалено локальных копий {count}",
+					   count=removed))
 	pruned = ignore.prune_tombstones(context.vault.sessions_dir, set(context.vault.load_machines()))
 	if pruned:
-		context.say(f"[ccsync] отметки об удалении отработаны всеми машинами: {len(pruned)}")
+		context.say(tr("[ccsync] отметки об удалении отработаны всеми машинами: {count}",
+					   count=len(pruned)))
 
 	# Подтверждения и вычищенные отметки коммитим здесь же. Оставлять их в
 	# рабочем каталоге до ближайшего push нельзя: следующий `pull --rebase
@@ -709,49 +745,57 @@ def _apply_tombstones(context: Context) -> None:
 
 def cmd_status(context: Context, args) -> int:
 	machine = context.require_machine()
-	print(f"Машина:      {machine.describe()}")
-	print(f"Хранилище:   {context.root}")
-	print(f"Ветка:       {context.git.current_branch()}")
+	print(tr("Машина:      {machine}", machine=machine.describe()))
+	print(tr("Хранилище:   {root}", root=context.root))
+	print(tr("Ветка:       {branch}", branch=context.git.current_branch()))
 	dirty = context.git.dirty_paths()
-	print(f"Не отдано:   {len(dirty)} файлов" + (": " + ", ".join(dirty[:5]) if dirty else ""))
+	print(tr("Не отдано:   {count} файлов", count=len(dirty))
+		  + (": " + ", ".join(dirty[:5]) if dirty else ""))
 	facts = memoryscope.load_facts(context.vault.memory_facts_dir)
 	own = [f for f in facts if f.applies_to(machine)]
-	print(f"Память:      всего {len(facts)}, применимо здесь {len(own)}")
+	print(tr("Память:      всего {total}, применимо здесь {here}",
+			 total=len(facts), here=len(own)))
 	mapping = context.vault.paths_for_machine(machine.machine_id)
-	print(f"Проекты:     привязано {len(mapping)}")
+	print(tr("Проекты:     привязано {count}", count=len(mapping)))
 	unbound = context.vault.unbound_keys(machine.machine_id)
 	if unbound:
-		print(f"Не привязано: {', '.join(unbound)}")
+		print(tr("Не привязано: {keys}", keys=", ".join(unbound)))
 	ignored = ignore.IgnoreList.for_config(context.config_dir)
 	if ignored.entries:
 		pending = len(ignored.pending_local_deletions())
-		tail = f", ждут удаления локально {pending}" if pending else ""
-		print(f"Игнор:       сессий {len(ignored.entries)}, из них забыто "
-			  f"{ignored.forgotten_count}{tail}")
+		tail = tr(", ждут удаления локально {count}", count=pending) if pending else ""
+		print(tr("Игнор:       сессий {total}, из них забыто {forgotten}{tail}",
+				 total=len(ignored.entries), forgotten=ignored.forgotten_count,
+				 tail=tail))
 	stones = ignore.load_tombstones(context.vault.sessions_dir)
 	if stones:
 		known = set(context.vault.load_machines())
 		waiting = [s for s in stones
 				   if not known or not known.issubset(ignore.acked_by(context.vault.sessions_dir, s.session_id))]
-		print(f"Отметки об удалении: {len(stones)}" + (f", ждут другие машины {len(waiting)}" if waiting else ""))
+		print(tr("Отметки об удалении: {count}", count=len(stones))
+			  + (tr(", ждут другие машины {count}", count=len(waiting)) if waiting else ""))
 	template_path, scopes_path = _mcp_paths(context)
 	servers = tools._read_json(template_path, {})
 	if isinstance(servers, dict) and servers:
 		scope_map = tools.load_mcp_scopes(scopes_path)
 		foreign = [name for name in servers
 				   if not scopes.matches(tools.mcp_scope_for(scope_map, name), machine)]
-		line = f"MCP:         всего {len(servers)}, здесь {len(servers) - len(foreign)}"
+		line = tr("MCP:         всего {total}, здесь {here}",
+				  total=len(servers), here=len(servers) - len(foreign))
 		if foreign:
-			line += f", не для этой машины {len(foreign)} ({', '.join(sorted(foreign))})"
+			line += tr(", не для этой машины {count} ({names})",
+					   count=len(foreign), names=", ".join(sorted(foreign)))
 		print(line)
 	others = context.vault.other_machines(machine.machine_id)
 	if others:
-		print("Другие машины: " + ", ".join(others))
-	print(f"Claude Code: {machine.claude_version or 'версия неизвестна'}")
+		print(tr("Другие машины: {names}", names=", ".join(others)))
+	print(tr("Claude Code: {version}",
+			 version=machine.claude_version or tr("версия неизвестна")))
 	gap = version_gap(context, machine)
 	if gap:
-		print(f"  ВНИМАНИЕ: на {gap[0]} новее — {gap[1]}. Формат транскрипта меняется "
-			  f"между релизами, обнови эту машину: claude update")
+		print(tr("  ВНИМАНИЕ: на {machine} новее — {version}. Формат транскрипта "
+				 "меняется между релизами, обнови эту машину: claude update",
+				 machine=gap[0], version=gap[1]))
 	return 0
 
 
@@ -776,7 +820,7 @@ def cmd_mcp(context: Context, args) -> int:
 	scope_map = tools.load_mcp_scopes(scopes_path)
 	wanted = tools._read_json(template_path, {})
 	if not isinstance(wanted, dict) or not wanted:
-		print("В хранилище нет ни одного MCP-сервера.")
+		print(tr("В хранилище нет ни одного MCP-сервера."))
 		return 0
 	if args.name:
 		return _set_mcp_scope(context, args, machine, scope_map, wanted, scopes_path)
@@ -792,10 +836,13 @@ def cmd_mcp(context: Context, args) -> int:
 		foreign += 0 if here else 1
 		state = _mcp_state(name, wanted[name], local, mapper, secrets, here)
 		print(f"  {name:<{width}}  {scopes.format(scope):<24}  "
-			  f"здесь: {'да ' if here else 'нет'}  {state}")
+			  + tr("здесь: {answer}",
+				   answer=tr("да ") if here else tr("нет"))
+			  + f"  {state}")
 	if foreign:
-		print(f"\nНе для этой машины: {foreign}. "
-			  f"Вернуть общим: {_ccsync_hint()} mcp scope <имя> --global")
+		print("\n" + tr("Не для этой машины: {count}. "
+						"Вернуть общим: {command} mcp scope <имя> --global",
+						count=foreign, command=_ccsync_hint()))
 	return 0
 
 
@@ -806,19 +853,20 @@ def _mcp_state(name, definition, local, mapper, secrets, here: bool) -> str:
 	rendered = json.loads(rendered_text)
 	if not here:
 		if name not in local:
-			return "убран локально"
-		return "ЕСТЬ локально, правлен руками" if local[name] != rendered else "будет убран при pull"
+			return tr("убран локально")
+		return (tr("ЕСТЬ локально, правлен руками") if local[name] != rendered
+				else tr("будет убран при pull"))
 	if name not in local:
-		return "будет поставлен при pull"
+		return tr("будет поставлен при pull")
 	problem = tools.probe_runnable(rendered)
-	return f"НЕ ЗАПУСТИТСЯ: {problem}" if problem else "ок"
+	return tr("НЕ ЗАПУСТИТСЯ: {problem}", problem=problem) if problem else tr("ок")
 
 
 def _set_mcp_scope(context, args, machine, scope_map, wanted, scopes_path) -> int:
 	name = args.name
 	if name not in wanted:
-		print(f"Сервера {name} в хранилище нет. Известные: " + ", ".join(sorted(wanted)),
-			  file=sys.stderr)
+		print(tr("Сервера {name} в хранилище нет. Известные: {names}",
+				 name=name, names=", ".join(sorted(wanted))), file=sys.stderr)
 		return 1
 	current = tools.mcp_scope_for(scope_map, name)
 	if args.globally:
@@ -834,14 +882,16 @@ def _set_mcp_scope(context, args, machine, scope_map, wanted, scopes_path) -> in
 		return 0
 	unknown = _unknown_machines(context, new_scope)
 	if unknown:
-		print(f"ВНИМАНИЕ: в реестре нет машин: {', '.join(unknown)}. "
-			  f"Опечатка? Известные: {', '.join(sorted(context.vault.load_machines()))}",
+		print(tr("ВНИМАНИЕ: в реестре нет машин: {names}. "
+				 "Опечатка? Известные: {known}",
+				 names=", ".join(unknown),
+				 known=", ".join(sorted(context.vault.load_machines()))),
 			  file=sys.stderr)
 	scope_map[name] = new_scope
 	tools.save_mcp_scopes(scopes_path, scope_map)
 	print(f"{name}: {scopes.format(current)} → {scopes.format(new_scope)} "
 		  f"({scopes.describe(new_scope, machine)})")
-	print(f"Применить здесь: {_ccsync_hint()} pull tools")
+	print(tr("Применить здесь: {command} pull tools", command=_ccsync_hint()))
 	return 0
 
 
@@ -862,7 +912,8 @@ def cmd_bind(context: Context, args) -> int:
 	machine = context.require_machine()
 	path = args.path or os.getcwd()
 	context.vault.bind(args.key, machine.machine_id, str(Path(path).resolve()))
-	print(f"{args.key} → {path}  (машина {machine.machine_id})")
+	print(tr("{key} → {path}  (машина {machine})",
+			 key=args.key, path=path, machine=machine.machine_id))
 	return 0
 
 
@@ -873,9 +924,10 @@ def cmd_machines(context: Context, args) -> int:
 	for machine_id, data in sorted(context.vault.load_machines().items()):
 		mark = "→" if machine and machine_id == machine.machine_id else " "
 		note = f"  — {data.get('note')}" if data.get("note") else ""
-		version = data.get("claude_version") or "версия неизвестна"
-		print(f"{mark} {machine_id}: {data.get('distro', '?')}, Claude Code {version}, "
-			  f"$HOME={data.get('home', '?')}{note}")
+		version = data.get("claude_version") or tr("версия неизвестна")
+		print(tr("{mark} {id}: {distro}, Claude Code {version}, $HOME={home}{note}",
+				 mark=mark, id=machine_id, distro=data.get("distro", "?"),
+				 version=version, home=data.get("home", "?"), note=note))
 	return 0
 
 
@@ -886,25 +938,30 @@ def _forget_machine(context: Context, machine, target_id: str) -> int:
 	подтверждения — то есть висят до самого срока в 180 дней.
 	"""
 	if machine and target_id == machine.machine_id:
-		print("Это текущая машина — списывать её нечего.", file=sys.stderr)
+		print(tr("Это текущая машина — списывать её нечего."), file=sys.stderr)
 		return 2
 	known = context.vault.load_machines()
 	if target_id not in known:
-		print(f"Машина {target_id} в реестре не числится. Известные: "
-			  + ", ".join(sorted(known)) or "нет ни одной", file=sys.stderr)
+		print(tr("Машина {id} в реестре не числится. Известные: {known}",
+				 id=target_id,
+				 known=", ".join(sorted(known)) or tr("нет ни одной")),
+			  file=sys.stderr)
 		return 1
 
 	_pull_and_settle(context)
 	removed = context.vault.forget_machine(target_id)
 	if not removed:
-		print(f"У машины {target_id} не оказалось файлов реестра.", file=sys.stderr)
+		print(tr("У машины {id} не оказалось файлов реестра.", id=target_id),
+			  file=sys.stderr)
 		return 1
 	commit = context.git.commit_all(f"forget machine {target_id}")
-	context.say(f"[ccsync] {commit.out or commit.err or 'коммит создан'}")
+	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	push = context.git.push()
-	print(f"Машина {target_id} списана: " + ", ".join(removed))
+	print(tr("Машина {id} списана: {files}",
+			 id=target_id, files=", ".join(removed)))
 	if not push.ok:
-		print(f"[ccsync] push не прошёл: {push.err or push.out}", file=sys.stderr)
+		print(tr("[ccsync] push не прошёл: {error}", error=push.err or push.out),
+			  file=sys.stderr)
 		return 1
 	return 0
 
@@ -937,8 +994,8 @@ def cmd_adopt(context: Context, args) -> int:
 				moved.append(f"memory/{item.name}")
 
 	if backup.exists():
-		print(f"Резервная копия: {backup}")
-	print(f"Перенесено в хранилище: {len(moved)} элементов")
+		print(tr("Резервная копия: {path}", path=backup))
+	print(tr("Перенесено в хранилище: {count} элементов", count=len(moved)))
 	return 0
 
 
@@ -962,88 +1019,88 @@ def _common_options() -> argparse.ArgumentParser:
 	"""
 	common = argparse.ArgumentParser(add_help=False)
 	common.add_argument("--vault", default=argparse.SUPPRESS,
-						help="путь к хранилищу (по умолчанию — родитель bin/)")
+						help=tr("путь к хранилищу (по умолчанию — родитель bin/)"))
 	common.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
-						help="только ошибки")
+						help=tr("только ошибки"))
 	return common
 
 
 def build_parser() -> argparse.ArgumentParser:
 	common = _common_options()
-	parser = argparse.ArgumentParser(prog="ccsync", description=__doc__,
+	parser = argparse.ArgumentParser(prog="ccsync", description=tr(__doc__),
 									 formatter_class=argparse.RawDescriptionHelpFormatter)
-	parser.add_argument("--vault", help="путь к хранилищу (по умолчанию — родитель bin/)")
-	parser.add_argument("--quiet", action="store_true", help="только ошибки")
+	parser.add_argument("--vault", help=tr("путь к хранилищу (по умолчанию — родитель bin/)"))
+	parser.add_argument("--quiet", action="store_true", help=tr("только ошибки"))
 	subparsers = parser.add_subparsers(dest="command", required=True, parser_class=lambda **kw: argparse.ArgumentParser(parents=[common], **kw))
 
-	init = subparsers.add_parser("init", help="завести паспорт машины")
-	init.add_argument("--id", help="идентификатор машины")
-	init.add_argument("--note", default="", help="заметка о машине")
-	init.add_argument("--force", action="store_true", help="перенастроить существующую")
-	init.add_argument("--yes", action="store_true", help="без вопросов")
+	init = subparsers.add_parser("init", help=tr("завести паспорт машины"))
+	init.add_argument("--id", help=tr("идентификатор машины"))
+	init.add_argument("--note", default="", help=tr("заметка о машине"))
+	init.add_argument("--force", action="store_true", help=tr("перенастроить существующую"))
+	init.add_argument("--yes", action="store_true", help=tr("без вопросов"))
 	init.set_defaults(func=cmd_init)
 
 	for name, func, help_text in (("push", cmd_push, "отдать своё"), ("pull", cmd_pull, "принять чужое")):
 		sub = subparsers.add_parser(name, help=help_text)
 		sub.add_argument("what", nargs="?", default="all", choices=["all", "tools", "memory", "session"])
-		sub.add_argument("--session", help="id сессии (по умолчанию — самая свежая в этом каталоге)")
-		sub.add_argument("--project", help="путь проекта (по умолчанию — текущий каталог)")
-		sub.add_argument("--dry-run", action="store_true", help="ничего не менять")
-		sub.add_argument("--no-autobind", action="store_true", help="не привязывать проекты автоматически")
-		sub.add_argument("--from-hook", action="store_true", help="взять данные сессии из stdin (хук)")
-		sub.add_argument("--debounce", type=int, default=0, help="не чаще, чем раз в N секунд")
-		sub.add_argument("--max-mb", type=int, default=50, help="порог размера транскрипта, МБ")
+		sub.add_argument("--session", help=tr("id сессии (по умолчанию — самая свежая в этом каталоге)"))
+		sub.add_argument("--project", help=tr("путь проекта (по умолчанию — текущий каталог)"))
+		sub.add_argument("--dry-run", action="store_true", help=tr("ничего не менять"))
+		sub.add_argument("--no-autobind", action="store_true", help=tr("не привязывать проекты автоматически"))
+		sub.add_argument("--from-hook", action="store_true", help=tr("взять данные сессии из stdin (хук)"))
+		sub.add_argument("--debounce", type=int, default=0, help=tr("не чаще, чем раз в N секунд"))
+		sub.add_argument("--max-mb", type=int, default=50, help=tr("порог размера транскрипта, МБ"))
 		sub.set_defaults(func=func)
 
-	ignore_cmd = subparsers.add_parser("ignore", help="не синхронизировать эту сессию")
-	ignore_cmd.add_argument("--session", help="id сессии (по умолчанию — текущая)")
-	ignore_cmd.add_argument("--project", help="путь проекта (по умолчанию — текущий каталог)")
-	ignore_cmd.add_argument("--reason", default="", help="зачем помечена")
-	ignore_cmd.add_argument("--list", action="store_true", help="показать помеченные")
-	ignore_cmd.add_argument("--undo", metavar="ID", help="снять пометку")
+	ignore_cmd = subparsers.add_parser("ignore", help=tr("не синхронизировать эту сессию"))
+	ignore_cmd.add_argument("--session", help=tr("id сессии (по умолчанию — текущая)"))
+	ignore_cmd.add_argument("--project", help=tr("путь проекта (по умолчанию — текущий каталог)"))
+	ignore_cmd.add_argument("--reason", default="", help=tr("зачем помечена"))
+	ignore_cmd.add_argument("--list", action="store_true", help=tr("показать помеченные"))
+	ignore_cmd.add_argument("--undo", metavar="ID", help=tr("снять пометку"))
 	ignore_cmd.set_defaults(func=cmd_ignore, from_hook=False)
 
-	forget = subparsers.add_parser("forget", help="забыть сессию везде (необратимо)")
-	forget.add_argument("--session", help="id сессии (по умолчанию — текущая)")
-	forget.add_argument("--project", help="путь проекта (по умолчанию — текущий каталог)")
-	forget.add_argument("--reason", default="", help="зачем забыта")
+	forget = subparsers.add_parser("forget", help=tr("забыть сессию везде (необратимо)"))
+	forget.add_argument("--session", help=tr("id сессии (по умолчанию — текущая)"))
+	forget.add_argument("--project", help=tr("путь проекта (по умолчанию — текущий каталог)"))
+	forget.add_argument("--reason", default="", help=tr("зачем забыта"))
 	forget.add_argument("--keep-local", action="store_true",
-						help="оставить транскрипт на этой машине")
-	forget.add_argument("--yes", action="store_true", help="без подтверждения")
+						help=tr("оставить транскрипт на этой машине"))
+	forget.add_argument("--yes", action="store_true", help=tr("без подтверждения"))
 	forget.set_defaults(func=cmd_forget, from_hook=False)
 
-	status = subparsers.add_parser("status", help="что расходится")
+	status = subparsers.add_parser("status", help=tr("что расходится"))
 	status.set_defaults(func=cmd_status)
 
-	bind = subparsers.add_parser("bind", help="привязать проект к пути")
-	bind.add_argument("key", help="ключ проекта")
-	bind.add_argument("path", nargs="?", help="путь (по умолчанию — текущий каталог)")
+	bind = subparsers.add_parser("bind", help=tr("привязать проект к пути"))
+	bind.add_argument("key", help=tr("ключ проекта"))
+	bind.add_argument("path", nargs="?", help=tr("путь (по умолчанию — текущий каталог)"))
 	bind.set_defaults(func=cmd_bind)
 
-	machines = subparsers.add_parser("machines", help="список машин")
+	machines = subparsers.add_parser("machines", help=tr("список машин"))
 	machines.add_argument("--forget", metavar="ID",
-						  help="убрать из реестра машину, которой больше нет")
+						  help=tr("убрать из реестра машину, которой больше нет"))
 	machines.set_defaults(func=cmd_machines)
 
-	adopt = subparsers.add_parser("adopt", help="перевести локальные каталоги на симлинки")
+	adopt = subparsers.add_parser("adopt", help=tr("перевести локальные каталоги на симлинки"))
 	adopt.set_defaults(func=cmd_adopt)
 
-	mcp = subparsers.add_parser("mcp", help="MCP-серверы и их принадлежность машинам")
+	mcp = subparsers.add_parser("mcp", help=tr("MCP-серверы и их принадлежность машинам"))
 	mcp_sub = mcp.add_subparsers(dest="mcp_command")
 	mcp.set_defaults(func=cmd_mcp, name=None, value=None,
 					 here=False, not_here=False, globally=False)
 	scope_cmd = mcp_sub.add_parser(
-		"scope", help="показать или задать scope сервера",
-		description="Без значения — показать текущий scope. Значения: global, "
-					"<машина>, os:linux, !<машина> (везде, кроме неё).")
-	scope_cmd.add_argument("name", help="имя MCP-сервера")
-	scope_cmd.add_argument("value", nargs="*", help="элементы scope")
+		"scope", help=tr("показать или задать scope сервера"),
+		description=tr("Без значения — показать текущий scope. Значения: global, "
+					   "<машина>, os:linux, !<машина> (везде, кроме неё)."))
+	scope_cmd.add_argument("name", help=tr("имя MCP-сервера"))
+	scope_cmd.add_argument("value", nargs="*", help=tr("элементы scope"))
 	scope_cmd.add_argument("--here", action="store_true",
-						   help="только эта машина")
+						   help=tr("только эта машина"))
 	scope_cmd.add_argument("--not-here", dest="not_here", action="store_true",
-						   help="везде, кроме этой машины")
+						   help=tr("везде, кроме этой машины"))
 	scope_cmd.add_argument("--global", dest="globally", action="store_true",
-						   help="вернуть в общие (значение по умолчанию)")
+						   help=tr("вернуть в общие (значение по умолчанию)"))
 	scope_cmd.set_defaults(func=cmd_mcp)
 	return parser
 

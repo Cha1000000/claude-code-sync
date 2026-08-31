@@ -25,6 +25,9 @@ import sys
 from pathlib import Path
 
 VAULT = Path(__file__).resolve().parent
+sys.path.insert(0, str(VAULT / "bin"))
+
+from ccsync_lib.i18n import tr  # noqa: E402 — путь к движку известен только выше
 
 
 def config_dir() -> Path:
@@ -62,7 +65,7 @@ def already_there(existing: list, command_part: str) -> bool:
 
 
 def main() -> int:
-	parser = argparse.ArgumentParser(description="Прописать хуки ccsync")
+	parser = argparse.ArgumentParser(description=tr("Прописать хуки ccsync"))
 	parser.add_argument("--dry-run", action="store_true")
 	args = parser.parse_args()
 
@@ -74,7 +77,8 @@ def main() -> int:
 		try:
 			data = json.loads(settings.read_text(encoding="utf-8"))
 		except json.JSONDecodeError as error:
-			sys.exit(f"{settings} не разбирается как JSON: {error}")
+			sys.exit(tr("{path} не разбирается как JSON: {error}",
+						path=settings, error=error))
 
 	hooks = data.setdefault("hooks", {})
 	added = []
@@ -90,10 +94,10 @@ def main() -> int:
 			added.append(f"{event}: {command}")
 
 	if not added:
-		print("Хуки уже на месте, ничего не меняю.")
+		print(tr("Хуки уже на месте, ничего не меняю."))
 		return 0
 
-	print("Будет добавлено:" if args.dry_run else "Добавлено:")
+	print(tr("Будет добавлено:") if args.dry_run else tr("Добавлено:"))
 	for line in added:
 		print(f"  {line}")
 
@@ -102,10 +106,11 @@ def main() -> int:
 
 	if settings.exists():
 		shutil.copy2(settings, settings.with_suffix(".json.before-ccsync"))
-		print(f"Прежний файл: {settings.with_suffix('.json.before-ccsync')}")
+		print(tr("Прежний файл: {path}",
+				 path=settings.with_suffix(".json.before-ccsync")))
 	settings.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-	print(f"Записано: {settings}")
-	print("Дальше: ccsync.py push tools — и хуки уедут на остальные машины.")
+	print(tr("Записано: {path}", path=settings))
+	print(tr("Дальше: ccsync.py push tools — и хуки уедут на остальные машины."))
 	return 0
 
 

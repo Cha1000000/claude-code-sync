@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import scopes
+from .i18n import tr
 from .identity import Machine, find_claude
 from .paths import PathMapper
 
@@ -267,7 +268,8 @@ def apply_settings(template_path: Path, config_dir: Path, mapper: PathMapper,
 	try:
 		template = json.loads(template_path.read_text(encoding="utf-8"))
 	except json.JSONDecodeError as error:
-		raise ValueError(f"шаблон настроек не разбирается как JSON: {error}") from error
+		raise ValueError(tr("шаблон настроек не разбирается как JSON: {error}",
+							error=error)) from error
 
 	def expand(text: str) -> str:
 		text = mapper.detokenize(text)

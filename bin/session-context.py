@@ -22,36 +22,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 def main() -> int:
 	try:
 		from ccsync_lib import identity, memoryscope
+		from ccsync_lib.i18n import tr
 		from ccsync_lib.vault import Vault
 
 		identity.setup_console()
 		machine = identity.load_machine()
 		if machine is None:
-			print("[ccsync] Машина не настроена: python3 bin/ccsync.py init")
+			print(tr("[ccsync] Машина не настроена: python3 bin/ccsync.py init"))
 			return 0
 
 		vault = Vault(Path(__file__).resolve().parent.parent)
 		lines = [
-			f"[ccsync] Машина: {machine.machine_id} · {machine.distro} · "
-			f"$HOME={machine.home}"
+			tr("[ccsync] Машина: {id} · {distro} · $HOME={home}",
+			   id=machine.machine_id, distro=machine.distro, home=machine.home)
 		]
 
 		cwd = os.getcwd()
 		bound = vault.paths_for_machine(machine.machine_id)
 		key = next((k for k, p in bound.items() if _same_path(p, cwd)), None)
 		if key:
-			lines.append(f"[ccsync] Проект: {key} → {cwd} (привязан)")
+			lines.append(tr("[ccsync] Проект: {key} → {path} (привязан)",
+							key=key, path=cwd))
 		else:
-			lines.append(f"[ccsync] Каталог: {cwd} (проект не привязан к хранилищу)")
+			lines.append(tr("[ccsync] Каталог: {path} "
+							"(проект не привязан к хранилищу)", path=cwd))
 
 		facts = memoryscope.load_facts(vault.memory_facts_dir)
 		if facts:
 			own = sum(1 for f in facts if f.applies_to(machine) and not f.is_global)
 			shared = sum(1 for f in facts if f.is_global)
 			foreign = len(facts) - own - shared
-			line = f"[ccsync] Память: этой машины {own}, общих {shared}"
+			line = tr("[ccsync] Память: этой машины {own}, общих {shared}",
+					  own=own, shared=shared)
 			if foreign:
-				line += f", про другие машины {foreign} — НЕ применять здесь без проверки"
+				line += tr(", про другие машины {count} — "
+						   "НЕ применять здесь без проверки", count=foreign)
 			lines.append(line)
 
 		broken = _unusable_mcp(vault, machine)
@@ -59,17 +64,20 @@ def main() -> int:
 			# Сам pull работает с --quiet, и его вывод уходит в никуда, поэтому
 			# про приехавший, но неработающий сервер сказать больше негде.
 			for name, problem in broken:
-				lines.append(f"[ccsync] MCP {name} здесь не запустится: {problem}")
+				lines.append(tr("[ccsync] MCP {name} здесь не запустится: {problem}",
+								name=name, problem=problem))
 			names = " ".join(name for name, _ in broken)
-			lines.append(f"[ccsync]   если он не нужен на этой машине: /sync-mcp {names} --not-here")
+			lines.append(tr("[ccsync]   если он не нужен на этой машине: "
+							"/sync-mcp {names} --not-here", names=names))
 
 		others = vault.other_machines(machine.machine_id)
 		if others:
-			lines.append("[ccsync] Другие машины: " + ", ".join(sorted(others)))
+			lines.append(tr("[ccsync] Другие машины: {names}",
+							names=", ".join(sorted(others))))
 
 		print("\n".join(lines))
 	except Exception as error:  # хук не имеет права ломать запуск сессии
-		print(f"[ccsync] контекст машины недоступен: {error}", file=sys.stderr)
+		print(f"[ccsync] контекст машины недоступен: {error}", file=sys.stderr)  # noqa: перевод недоступен, если импорт упал
 	return 0
 
 
