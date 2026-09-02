@@ -293,8 +293,12 @@ them.
 - **Keep Claude Code versions close** across machines: the transcript format
   changes between releases, and an older build may not read a newer session.
 - **One session at a time.** Working in the same session on two machines
-  simultaneously is not supported; `.gitattributes` marks transcripts
-  `merge=union` so nothing is lost, but the order of turns can end up scrambled.
+  simultaneously is not supported. `merge=union` in `.gitattributes` keeps every
+  record when two copies collide, but the file is whole only on the surface:
+  Claude Code assembles the conversation by walking `parentUuid` backwards from
+  the last record, not by line order, so one of the merged branches reaches the
+  context and the other stays in the file unreachable. `pull` warns about such
+  sessions, and the duplicate cleanup leaves them alone.
 - **It is git, not realtime.** Expect a delay measured in minutes.
 - **Transcripts over 50 MB are skipped** with a warning rather than silently —
   GitHub rejects files above 100 MB.
