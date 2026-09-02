@@ -249,6 +249,27 @@ installs it automatically — copy it to `~/.claude/statusline.py` and add to yo
 "statusLine": { "type": "command", "command": "python3 ~/.claude/statusline.py", "padding": 0 }
 ```
 
+## Branches
+
+Unreachable branches on their own mean nothing: a long session usually has dozens
+of them — abandoned continuations you walked away from yourself. So the engine
+does not scan files for branch points. It compares the file before and after a
+merge and speaks up only when something that *was* readable stopped being
+readable — and only from six records up, because a single rewritten turn and
+somebody else's branch are structurally identical, and only scale tells them apart.
+
+When it does speak up:
+
+```bash
+python3 ~/claude-code-sync/bin/ccsync.py branches --session <id>   # what the branches are
+python3 ~/claude-code-sync/bin/ccsync.py split <id>                # give each its own session
+```
+
+`branches` lists every branch with its size, the time of its last record and the
+opening words, so you can recognise the one you want. `split` moves each branch
+into a session of its own — after that every one of them opens whole and as
+itself. The original file is kept in `~/.claude/backups/`.
+
 ## Language
 
 The engine picks its language from `CCSYNC_LANG`, falling back to your locale
@@ -293,12 +314,12 @@ them.
 - **Keep Claude Code versions close** across machines: the transcript format
   changes between releases, and an older build may not read a newer session.
 - **One session at a time.** Working in the same session on two machines
-  simultaneously is not supported. `merge=union` in `.gitattributes` keeps every
-  record when two copies collide, but the file is whole only on the surface:
-  Claude Code assembles the conversation by walking `parentUuid` backwards from
-  the last record, not by line order, so one of the merged branches reaches the
-  context and the other stays in the file unreachable. `pull` warns about such
-  sessions, and the duplicate cleanup leaves them alone.
+  simultaneously is not supported. `merge=union` keeps every record when two
+  copies collide, but the file is whole only on the surface: Claude Code
+  assembles the conversation by walking `parentUuid` backwards from the **last
+  line of the file** — verified by running `claude --resume`, line order wins
+  over timestamps — so one merged branch is read and the other stays in the file
+  unreachable. See *Branches* below for what the engine does about it.
 - **It is git, not realtime.** Expect a delay measured in minutes.
 - **Transcripts over 50 MB are skipped** with a warning rather than silently —
   GitHub rejects files above 100 MB.
