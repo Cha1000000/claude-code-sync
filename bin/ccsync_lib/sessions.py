@@ -160,6 +160,73 @@ def record_uuids(transcript: Path) -> set[str]:
 	return found
 
 
+@dataclass
+class Chain:
+	"""Как записи транскрипта связаны между собой.
+
+	Claude Code собирает разговор обратным обходом `parentUuid` от последней
+	записи, а не порядком строк в файле. Поэтому «файл на месте и все записи
+	целы» и «сессия восстановится тем, чем была» — разные утверждения, и
+	второе надо проверять отдельно.
+	"""
+
+	order: list[str]                 # uuid в порядке появления в файле
+	parents: dict[str, str | None]   # uuid → parentUuid
+	children: dict[str, list[str]]   # parentUuid → его дети
+
+	@property
+	def reachable(self) -> set[str]:
+		"""Записи, которые попадут в контекст при восстановлении."""
+		if not self.order:
+			return set()
+		seen: set[str] = set()
+		current: str | None = self.order[-1]
+		while current and current not in seen:
+			seen.add(current)
+			current = self.parents.get(current)
+		return seen
+
+	@property
+	def forks(self) -> list[str]:
+		"""Записи, у которых больше одного продолжения.
+
+		В нормальном транскрипте таких нет вовсе: линия одна, а сегменты после
+		`/compact` живут отдельными цепочками, а не ветвлением. Ветвление
+		появляется, когда две машины продолжили одну сессию врозь и git склеил
+		их файлы объединением строк (`merge=union` в .gitattributes): записи
+		целы, но в контекст приедет только одна из веток.
+		"""
+		return [parent for parent, kids in self.children.items() if len(kids) > 1]
+
+
+def read_chain(transcript: Path) -> Chain:
+	"""Разобрать связи записей транскрипта."""
+	order: list[str] = []
+	parents: dict[str, str | None] = {}
+	children: dict[str, list[str]] = {}
+	try:
+		with transcript.open(encoding="utf-8", errors="replace") as fh:
+			for line in fh:
+				if '"uuid"' not in line:
+					continue
+				try:
+					record = json.loads(line)
+				except json.JSONDecodeError:
+					continue
+				uuid = record.get("uuid")
+				if not isinstance(uuid, str) or not uuid:
+					continue
+				parent = record.get("parentUuid")
+				parent = parent if isinstance(parent, str) and parent else None
+				order.append(uuid)
+				parents[uuid] = parent
+				if parent:
+					children.setdefault(parent, []).append(uuid)
+	except OSError:
+		pass
+	return Chain(order=order, parents=parents, children=children)
+
+
 def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 					  *, skip_session_id: str | None = None) -> tuple[list[Path], list[Path]]:
 	"""Убрать копии сессии, оставшиеся в других каталогах проектов.
@@ -169,9 +236,15 @@ def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 	настоящему пути. Старая раскладка при этом остаётся, и одна и та же сессия
 	начинает двоиться в /resume, причём устаревшая копия обрывается на середине.
 
-	Удаляем только то, что заведомо ничего не теряет: копию, все записи которой
-	есть в оставляемой. Файл текущей сессии не трогаем никогда — Claude Code
-	пишет в него прямо сейчас.
+	Удаляем только то, что заведомо ничего не теряет. Проверок две, и вторая
+	неочевидна: мало чтобы все записи копии нашлись в оставляемой — надо ещё,
+	чтобы читаемая часть копии осталась читаемой. Если оставляемая склеена из
+	двух разошедшихся веток, цепочка в ней уводит в чужую ветку, и записи,
+	которые в копии попадали в контекст, в ней окажутся недостижимы. Формально
+	ничего не потеряно, фактически человек откроет не тот разговор.
+
+	Файл текущей сессии не трогаем никогда — Claude Code пишет в него прямо
+	сейчас.
 
 	Возвращает (удалённые, оставленные-из-осторожности).
 	"""
@@ -183,15 +256,23 @@ def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 	]
 	if not others:
 		return [], []
-	kept_uuids = record_uuids(keep)
+	kept_chain = read_chain(keep)
+	kept_uuids = set(kept_chain.parents)
+	kept_reachable = kept_chain.reachable
 	removed: list[Path] = []
 	spared: list[Path] = []
 	for copy in others:
 		if skip_session_id and session_id == skip_session_id:
 			spared.append(copy)
 			continue
-		if record_uuids(copy) - kept_uuids:
+		copy_chain = read_chain(copy)
+		if set(copy_chain.parents) - kept_uuids:
 			# В копии есть то, чего нет в оставляемой, — не наше дело решать.
+			spared.append(copy)
+			continue
+		if copy_chain.reachable - kept_reachable:
+			# Записи на месте, но в оставляемой они выпали из цепочки: её
+			# восстановление даст другой разговор. Тоже не наше дело решать.
 			spared.append(copy)
 			continue
 		try:

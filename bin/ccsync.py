@@ -517,7 +517,26 @@ def _pull_sessions(context: Context, args) -> None:
 				context.say(tr("[ccsync] прежняя копия {id} оставлена: "
 							   "в ней есть свои записи — {path}",
 							   id=transcript.stem[:8], path=path))
+			_warn_about_forks(context, target / transcript.name, transcript.stem)
 	_report_stale(context, stale)
+
+
+def _warn_about_forks(context: Context, transcript: Path, session_id: str) -> None:
+	"""Сказать, если в транскрипте разошлись ветки.
+
+	Транскрипты помечены `merge=union`, чтобы при расхождении двух машин ничего
+	не пропало, — и не пропадает: строки склеиваются, записи целы. Но разговор
+	Claude Code собирает обратным обходом `parentUuid` от последней записи, а не
+	порядком строк, поэтому из двух склеенных веток в контекст приедет ровно
+	одна. Молчать об этом нельзя: со стороны файл выглядит целым.
+	"""
+	forks = sessions.read_chain(transcript).forks
+	if not forks:
+		return
+	context.say(tr("[ccsync] в сессии {id} разошлись ветки ({count}): записи целы, "
+				   "но при открытии в контекст попадёт только последняя",
+				   id=session_id[:8], count=len(forks)))
+	context.say(tr("[ccsync]   вторая ветка осталась в файле — {path}", path=transcript))
 
 
 def _report_stale(context: Context, stale: int) -> None:
