@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import uuid as uuid_module
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -161,6 +162,28 @@ def record_uuids(transcript: Path) -> set[str]:
 
 
 @dataclass
+class RecordInfo:
+	"""Кусочек записи, которого хватает человеку, чтобы узнать свою ветку."""
+
+	timestamp: str | None
+	preview: str
+
+
+@dataclass
+class Branch:
+	"""Одна линия разговора: от корня до хвоста."""
+
+	tip: str
+	uuids: set[str]
+	last_timestamp: str | None
+	preview: str
+
+	@property
+	def size(self) -> int:
+		return len(self.uuids)
+
+
+@dataclass
 class Chain:
 	"""Как записи транскрипта связаны между собой.
 
@@ -173,6 +196,12 @@ class Chain:
 	order: list[str]                 # uuid в порядке появления в файле
 	parents: dict[str, str | None]   # uuid → parentUuid
 	children: dict[str, list[str]]   # parentUuid → его дети
+	meta: dict[str, "RecordInfo"]    # uuid → время и начало реплики
+
+	@property
+	def tips(self) -> list[str]:
+		"""Записи без продолжения — хвосты веток."""
+		return [uuid for uuid in self.order if uuid not in self.children]
 
 	@property
 	def reachable(self) -> set[str]:
@@ -204,6 +233,7 @@ def read_chain(transcript: Path) -> Chain:
 	order: list[str] = []
 	parents: dict[str, str | None] = {}
 	children: dict[str, list[str]] = {}
+	meta: dict[str, RecordInfo] = {}
 	try:
 		with transcript.open(encoding="utf-8", errors="replace") as fh:
 			for line in fh:
@@ -220,11 +250,196 @@ def read_chain(transcript: Path) -> Chain:
 				parent = parent if isinstance(parent, str) and parent else None
 				order.append(uuid)
 				parents[uuid] = parent
+				meta[uuid] = RecordInfo(timestamp=record.get("timestamp"),
+										preview=_preview(record))
 				if parent:
 					children.setdefault(parent, []).append(uuid)
 	except OSError:
 		pass
-	return Chain(order=order, parents=parents, children=children)
+	return Chain(order=order, parents=parents, children=children, meta=meta)
+
+
+def _preview(record: dict, limit: int = 90) -> str:
+	"""Начало реплики — чтобы человек узнал свою ветку по первым словам."""
+	message = record.get("message")
+	content = message.get("content") if isinstance(message, dict) else None
+	if isinstance(content, list):
+		parts = [b.get("text", "") for b in content if isinstance(b, dict)]
+		content = " ".join(p for p in parts if p)
+	if not isinstance(content, str):
+		return ""
+	text = " ".join(content.split())
+	return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def walk_back(chain: Chain, start: str) -> set[str]:
+	"""Записи, достижимые от указанной обратным обходом parentUuid."""
+	seen: set[str] = set()
+	current: str | None = start
+	while current and current not in seen:
+		seen.add(current)
+		current = chain.parents.get(current)
+	return seen
+
+
+def branches(chain: Chain) -> list[Branch]:
+	"""Ветки разговора — по одной на хвост.
+
+	Ветки делят общий префикс: до точки расхождения записи у них одни и те же.
+	Поэтому в набор ветки входит и общая часть — так каждая ветка остаётся
+	самодостаточной сессией, которую можно открыть отдельно.
+	"""
+	found: list[Branch] = []
+	for tip in chain.tips:
+		uuids = walk_back(chain, tip)
+		info = chain.meta.get(tip)
+		# Для превью берём первую запись, которой нет в других ветках, — общее
+		# начало у всех одинаковое и ветку по нему не отличить.
+		found.append(Branch(tip=tip, uuids=uuids,
+							last_timestamp=info.timestamp if info else None,
+							preview=info.preview if info else ""))
+	for branch in found:
+		unique = branch.uuids - set().union(*(b.uuids for b in found if b is not branch)) \
+			if len(found) > 1 else branch.uuids
+		for uuid in chain.order:
+			if uuid in unique and chain.meta.get(uuid) and chain.meta[uuid].preview:
+				branch.preview = chain.meta[uuid].preview
+				break
+	return found
+
+
+def chain_from_text(text: str) -> Chain:
+	"""Разобрать связи записей из уже прочитанного текста транскрипта."""
+	order: list[str] = []
+	parents: dict[str, str | None] = {}
+	children: dict[str, list[str]] = {}
+	meta: dict[str, RecordInfo] = {}
+	for line in text.splitlines():
+		if '"uuid"' not in line:
+			continue
+		try:
+			record = json.loads(line)
+		except json.JSONDecodeError:
+			continue
+		uuid = record.get("uuid")
+		if not isinstance(uuid, str) or not uuid:
+			continue
+		parent = record.get("parentUuid")
+		parent = parent if isinstance(parent, str) and parent else None
+		order.append(uuid)
+		parents[uuid] = parent
+		meta[uuid] = RecordInfo(timestamp=record.get("timestamp"), preview=_preview(record))
+		if parent:
+			children.setdefault(parent, []).append(uuid)
+	return Chain(order=order, parents=parents, children=children, meta=meta)
+
+
+# Порог, ниже которого о потерянных записях не говорим. Структурно «человек
+# вернулся назад и переписал ход» и «git наложил чужую ветку» неотличимы: в обоих
+# случаях прежний хвост перестаёт читаться. Различает их только масштаб —
+# переписанный ход это одна-две записи, а чужая ветка это кусок работы.
+MIN_LOST_TO_WARN = 6
+
+
+def lost_after_merge(before: str, after: str) -> int:
+	"""Сколько записей было видно до слияния и перестало быть видно после.
+
+	Единственный надёжный признак того, что склейка навредила. Просто наличие
+	недостижимых веток ни о чём не говорит: в любом долгом транскрипте их полно
+	— это брошенные продолжения, к которым человек сам не вернулся. Важно
+	другое: была ветка читаемой до слияния и перестала после.
+	"""
+	old = chain_from_text(before)
+	new = chain_from_text(after)
+	if not old.order:
+		return 0
+	return len(old.reachable - new.reachable)
+
+
+@dataclass
+class SplitResult:
+	"""Вынесенная ветка: куда легла и что в ней."""
+
+	path: Path
+	session_id: str
+	records: int
+	preview: str
+
+
+def split_transcript(transcript: Path, backup_dir: Path | None = None) -> list[SplitResult]:
+	"""Разнести разошедшиеся ветки сессии по отдельным файлам.
+
+	Восстановление идёт от последней строки файла обратным обходом parentUuid
+	(проверено запуском `claude --resume`: побеждает именно порядок строк, а не
+	время записи). Поэтому из склеенной сессии читается ровно одна ветка, и
+	выбрать другую, не трогая данные, нельзя.
+
+	Выход — сделать каждую ветку самостоятельной сессией: у неё будет ровно один
+	хвост, и обе трактовки «последней записи» дадут одно и то же. Главная ветка
+	(та, что читается сейчас) остаётся в исходном файле, остальные уезжают в
+	новые файлы со своим `sessionId` — иначе сессия спорит сама с собой.
+
+	Служебные записи без `uuid` в новые файлы не копируются: проверено, что
+	сессия из одних только записей с `uuid` открывается и держит контекст.
+
+	Возвращает список вынесенных веток; пустой, если расхождения нет.
+	"""
+	chain = read_chain(transcript)
+	found = branches(chain)
+	if len(found) < 2 or not chain.order:
+		return []
+	last = chain.order[-1]
+	main = next((b for b in found if last in b.uuids), found[-1])
+	others = [b for b in found if b is not main]
+	if not others:
+		return []
+
+	lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
+	parsed: list[tuple[str, dict | None]] = []
+	for line in lines:
+		if not line.strip():
+			continue
+		try:
+			parsed.append((line, json.loads(line)))
+		except json.JSONDecodeError:
+			parsed.append((line, None))
+
+	if backup_dir is not None:
+		backup_dir.mkdir(parents=True, exist_ok=True)
+		(backup_dir / transcript.name).write_text(
+			"\n".join(line for line, _ in parsed) + "\n", encoding="utf-8")
+
+	results: list[SplitResult] = []
+	for branch in others:
+		new_id = str(uuid_module.uuid4())
+		out: list[str] = []
+		for _, record in parsed:
+			if not record:
+				continue
+			uuid = record.get("uuid")
+			if not isinstance(uuid, str) or uuid not in branch.uuids:
+				continue
+			moved = dict(record)
+			moved["sessionId"] = new_id
+			if "session_id" in moved:
+				moved["session_id"] = new_id
+			out.append(json.dumps(moved, ensure_ascii=False))
+		if not out:
+			continue
+		target = transcript.with_name(f"{new_id}.jsonl")
+		target.write_text("\n".join(out) + "\n", encoding="utf-8")
+		results.append(SplitResult(path=target, session_id=new_id,
+								   records=len(out), preview=branch.preview))
+
+	# Из исходного убираем записи, оставшиеся только в вынесенных ветках.
+	kept: list[str] = []
+	for line, record in parsed:
+		uuid = record.get("uuid") if record else None
+		if isinstance(uuid, str) and uuid not in main.uuids:
+			continue
+		kept.append(line)
+	transcript.write_text("\n".join(kept) + "\n", encoding="utf-8")
+	return results
 
 
 def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,

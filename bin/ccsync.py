@@ -8,6 +8,8 @@
     ccsync ignore          не отправлять эту сессию в хранилище
     ccsync forget          забыть сессию везде: и здесь, и на других машинах
     ccsync bind <ключ>     привязать проект к пути на этой машине
+    ccsync branches        ветки сессии, если она открывается не тем разговором
+    ccsync split <id>      разнести разошедшиеся ветки по отдельным сессиям
     ccsync adopt           перевести локальные каталоги на симлинки в репо
     ccsync machines        список известных машин
     ccsync mcp             MCP-серверы и их принадлежность машинам
@@ -129,8 +131,10 @@ def cmd_push(context: Context, args) -> int:
 					   seconds=args.debounce))
 		return 0
 
+	before = context.git.head()
 	if not _pull_and_settle(context):
 		return 1
+	_warn_about_lost_branches(context, before)
 
 	mapper = context.mapper()
 	done: list[str] = []
@@ -361,8 +365,10 @@ def _stamp_push(context: Context) -> None:
 def cmd_pull(context: Context, args) -> int:
 	machine = context.require_machine()
 	what = args.what
+	before = context.git.head()
 	if not _pull_and_settle(context):
 		return 1
+	_warn_about_lost_branches(context, before)
 	for change in migrate_registry.migrate(context.vault):
 		context.say(f"[ccsync] {change}")
 
@@ -517,26 +523,44 @@ def _pull_sessions(context: Context, args) -> None:
 				context.say(tr("[ccsync] прежняя копия {id} оставлена: "
 							   "в ней есть свои записи — {path}",
 							   id=transcript.stem[:8], path=path))
-			_warn_about_forks(context, target / transcript.name, transcript.stem)
 	_report_stale(context, stale)
 
 
-def _warn_about_forks(context: Context, transcript: Path, session_id: str) -> None:
-	"""Сказать, если в транскрипте разошлись ветки.
+def _warn_about_lost_branches(context: Context, before: str) -> None:
+	"""Сказать, если слияние спрятало часть разговора.
 
-	Транскрипты помечены `merge=union`, чтобы при расхождении двух машин ничего
-	не пропало, — и не пропадает: строки склеиваются, записи целы. Но разговор
-	Claude Code собирает обратным обходом `parentUuid` от последней записи, а не
-	порядком строк, поэтому из двух склеенных веток в контекст приедет ровно
-	одна. Молчать об этом нельзя: со стороны файл выглядит целым.
+	Транскрипты помечены `merge=union`: когда две машины продолжили одну сессию
+	врозь, git складывает строки обеих версий, и записи не пропадают. Но читается
+	сессия обратным обходом parentUuid от последней строки файла (проверено
+	запуском `claude --resume`), поэтому одна из веток может стать недостижимой.
+
+	Ловить это анализом самого файла бесполезно: недостижимые ветки есть почти
+	в каждом длинном транскрипте — человек возвращался назад, и брошенные
+	продолжения остались лежать. Значение имеет только изменение: была ветка
+	видна до слияния и перестала после. Поэтому сравниваем две версии файла из
+	git, а не гадаем по одной.
 	"""
-	forks = sessions.read_chain(transcript).forks
-	if not forks:
-		return
-	context.say(tr("[ccsync] в сессии {id} разошлись ветки ({count}): записи целы, "
-				   "но при открытии в контекст попадёт только последняя",
-				   id=session_id[:8], count=len(forks)))
-	context.say(tr("[ccsync]   вторая ветка осталась в файле — {path}", path=transcript))
+	changed = context.git.changed_since(before, "sessions")
+	for relative in changed:
+		if not relative.endswith(".jsonl"):
+			continue
+		old_text = context.git.file_at(before, relative)
+		if old_text is None:
+			continue  # файла раньше не было — терять нечего
+		current = context.root / relative
+		if not current.exists():
+			continue
+		lost = sessions.lost_after_merge(
+			old_text, current.read_text(encoding="utf-8", errors="replace"))
+		if lost < sessions.MIN_LOST_TO_WARN:
+			# Мелочь: обычно это просто переписанный ход, а не потерянная работа.
+			continue
+		session_id = Path(relative).stem
+		context.say(tr("[ccsync] в сессии {id} перестало читаться записей: {count}",
+					   id=session_id[:8], count=lost))
+		context.say(tr("[ccsync]   похоже, две машины продолжили её врозь; записи целы, "
+					   "ветки видно так: {command} branches --session {id}",
+					   command=_ccsync_hint(), id=session_id))
 
 
 def _report_stale(context: Context, stale: int) -> None:
@@ -992,6 +1016,82 @@ def _forget_machine(context: Context, machine, target_id: str) -> int:
 	return 0
 
 
+def cmd_branches(context: Context, args) -> int:
+	"""Показать сессии, в которых разошлись ветки."""
+	context.require_machine()
+	root = sessions.projects_root(context.config_dir)
+	targets = ignore.find_local_transcripts(root, args.session)
+	if not targets:
+		print(tr("Сессия {id} на этой машине не найдена.", id=args.session[:8]),
+			  file=sys.stderr)
+		return 1
+	shown = 0
+	for path in targets:
+		chain = sessions.read_chain(path)
+		if not chain.forks:
+			continue
+		shown += 1
+		found = sessions.branches(chain)
+		last = chain.order[-1] if chain.order else None
+		print(tr("{id} — веток: {count}  ({path})",
+				 id=path.stem[:8], count=len(found), path=path))
+		for index, branch in enumerate(found, 1):
+			mark = tr(" ← читается сейчас") if last in branch.uuids else ""
+			print(tr("  {index}) записей {size}, последняя {when}{mark}",
+					 index=index, size=branch.size,
+					 when=branch.last_timestamp or "?", mark=mark))
+			if branch.preview:
+				print(f"     «{branch.preview}»")
+	if not shown:
+		print(tr("В этой сессии ветки не расходятся."))
+		return 0
+	print(tr("Разнести ветки по отдельным сессиям: {command} split <id>",
+			 command=_ccsync_hint()))
+	return 0
+
+
+def cmd_split(context: Context, args) -> int:
+	"""Разнести разошедшиеся ветки сессии по отдельным сессиям."""
+	context.require_machine()
+	root = sessions.projects_root(context.config_dir)
+	found = ignore.find_local_transcripts(root, args.session)
+	if not found:
+		print(tr("Сессия {id} на этой машине не найдена.", id=args.session[:8]),
+			  file=sys.stderr)
+		return 1
+	transcript = found[0]
+	chain = sessions.read_chain(transcript)
+	if not chain.forks:
+		print(tr("В сессии {id} ветки не расходятся — делить нечего.",
+				 id=args.session[:8]))
+		return 0
+	if args.session == ignore.current_session_id():
+		print(tr("Это текущая сессия: Claude Code пишет в неё прямо сейчас. "
+				 "Закрой её и повтори."), file=sys.stderr)
+		return 2
+	if args.dry_run:
+		for branch in sessions.branches(chain):
+			print(tr("  ветка: записей {size}, последняя {when}",
+					 size=branch.size, when=branch.last_timestamp or "?"))
+		print(tr("--dry-run: ничего не записано."))
+		return 0
+
+	backup = context.config_dir / "backups" / f"split-{time.strftime('%Y%m%d-%H%M%S')}"
+	results = sessions.split_transcript(transcript, backup)
+	if not results:
+		print(tr("Делить нечего."))
+		return 0
+	print(tr("Резервная копия: {path}", path=backup / transcript.name))
+	for result in results:
+		print(tr("Вынесено в отдельную сессию {id}: записей {count}",
+				 id=result.session_id[:8], count=result.records))
+		if result.preview:
+			print(f"  «{result.preview}»")
+	print(tr("Открыть: claude --resume <id> из каталога этого проекта"))
+	print(tr("Отдать остальным машинам: {command} push session", command=_ccsync_hint()))
+	return 0
+
+
 def cmd_adopt(context: Context, args) -> int:
 	"""Перенести локальные каталоги в репозиторий и заменить их симлинками."""
 	machine = context.require_machine()
@@ -1108,6 +1208,17 @@ def build_parser() -> argparse.ArgumentParser:
 	machines.add_argument("--forget", metavar="ID",
 						  help=tr("убрать из реестра машину, которой больше нет"))
 	machines.set_defaults(func=cmd_machines)
+
+	branches_cmd = subparsers.add_parser(
+		"branches", help=tr("сессии, в которых разошлись ветки"))
+	branches_cmd.add_argument("--session", required=True, help=tr("id сессии"))
+	branches_cmd.set_defaults(func=cmd_branches)
+
+	split_cmd = subparsers.add_parser(
+		"split", help=tr("разнести разошедшиеся ветки по отдельным сессиям"))
+	split_cmd.add_argument("session", help=tr("id сессии"))
+	split_cmd.add_argument("--dry-run", action="store_true", help=tr("ничего не менять"))
+	split_cmd.set_defaults(func=cmd_split)
 
 	adopt = subparsers.add_parser("adopt", help=tr("перевести локальные каталоги на симлинки"))
 	adopt.set_defaults(func=cmd_adopt)

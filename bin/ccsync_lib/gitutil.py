@@ -70,6 +70,23 @@ class Git:
 			return GitResult(0, "нет remote — пропускаю pull", "")
 		return self.run("pull", "--rebase", "--autostash")
 
+	def head(self) -> str:
+		"""Текущий коммит — чтобы потом сравнить, что принёс pull."""
+		result = self.run("rev-parse", "HEAD")
+		return result.out.strip() if result.ok else ""
+
+	def changed_since(self, revision: str, *paths: str) -> list[str]:
+		"""Файлы, изменившиеся с указанного коммита."""
+		if not revision:
+			return []
+		result = self.run("diff", "--name-only", revision, "HEAD", "--", *paths)
+		return [line.strip() for line in result.out.splitlines() if line.strip()] if result.ok else []
+
+	def file_at(self, revision: str, path: str) -> str | None:
+		"""Содержимое файла на момент коммита; None — если файла там не было."""
+		result = self.run("show", f"{revision}:{path}")
+		return result.out if result.ok else None
+
 	def commit_all(self, message: str) -> GitResult:
 		self.run("add", "-A")
 		staged = self.run("diff", "--cached", "--name-only").out
