@@ -301,6 +301,14 @@ tools/tests/run-all.sh
 
 Worth running once on a new machine, to confirm the engine behaves there.
 
+`tools/tests/resume-check.sh` is the one check that cannot be automated. It puts
+a code word into a transcript and asks a live Claude Code for it after the
+session is restored. Every other rig checks files — it arrived, it sits at the
+right path, the records match — but none of them answers whether the model on the
+other side actually sees the conversation, and you cannot tell by looking: with
+an empty context Claude answers just as confidently. `--run` asks for you,
+`--clean` cleans up.
+
 `tests/run-all.sh` checks the template itself rather than the engine:
 `fresh-start.sh` walks two throwaway machines through the whole first-machine
 flow and back, asserting that nobody's `CLAUDE.md`, settings or skills got
