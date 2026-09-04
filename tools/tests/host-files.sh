@@ -88,6 +88,10 @@ check "путь развёрнут под этот дом" "да" \
 	"$(grep -q "$STAND/m2/.local/bin" "$STAND/m2/.local/bin/tool.sh" && echo да || echo нет)"
 check "файл чужого scope не появился" "нет" \
 	"$([ -e "$STAND/m2/.local/bin/only-here.sh" ] && echo да || echo нет)"
+check "status показывает обвязку" "да" \
+	"$("$STAND/m2.sh" status 2>/dev/null | grep -q 'Обвязка' && echo да || echo нет)"
+check "status не жалуется на расхождение" "нет" \
+	"$("$STAND/m2.sh" status 2>/dev/null | grep -q 'расходится' && echo да || echo нет)"
 
 echo "ТЕСТ 3 — ручную правку на месте не затираем"
 echo "# правка руками" >> "$STAND/m2/.local/bin/tool.sh"

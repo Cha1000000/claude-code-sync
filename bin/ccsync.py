@@ -888,6 +888,16 @@ def cmd_status(context: Context, args) -> int:
 			line += tr(", не для этой машины {count} ({names})",
 					   count=len(foreign), names=", ".join(sorted(foreign)))
 		print(line)
+	registry = hostfiles.load_registry(_host_registry_path(context))
+	if registry:
+		here = [key for key in registry if hostfiles.applies_here(registry, key, machine)]
+		line = tr("Обвязка:     файлов {total}, здесь {here}",
+				  total=len(registry), here=len(here))
+		diverged = _host_diverged(context, here)
+		if diverged:
+			line += tr(", расходится {count} ({names})",
+					   count=len(diverged), names=", ".join(sorted(diverged)))
+		print(line)
 	others = context.vault.other_machines(machine.machine_id)
 	if others:
 		print(tr("Другие машины: {names}", names=", ".join(others)))
@@ -899,6 +909,25 @@ def cmd_status(context: Context, args) -> int:
 				 "меняется между релизами, обнови эту машину: claude update",
 				 machine=gap[0], version=gap[1]))
 	return 0
+
+
+def _host_diverged(context: Context, keys: list[str]) -> list[str]:
+	"""Файлы обвязки, которые здесь не совпадают с хранилищем.
+
+	Причина может быть любой — правка на месте, ещё не сделанный push, не
+	применённый pull. Для сводки хватает самого факта расхождения: что именно
+	с ним делать, скажет `host`.
+	"""
+	home = context.config_dir.parent
+	host_dir = context.vault.tools_dir / hostfiles.HOST_DIR_NAME
+	mapper = context.mapper()
+	diverged: list[str] = []
+	for key in keys:
+		stored = hostfiles._read_text(hostfiles.vault_path(host_dir, key))
+		current = hostfiles._read_text(hostfiles.local_path(home, key))
+		if stored is None or current is None or mapper.detokenize(stored) != current:
+			diverged.append(key)
+	return diverged
 
 
 def _ccsync_hint() -> str:
