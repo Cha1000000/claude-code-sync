@@ -105,9 +105,9 @@ synced — each machine has its own. Do not copy them from another machine.
 | Step | Result |
 |---|---|
 | `init` | Creates `~/.claude/ccsync-machine.json` and registers the machine in `machines/<machine>.json` |
-| `pull all` | Symlinks for skills/commands/hooks/plans, `CLAUDE.md` and `statusline.py` if the vault carries them, `settings.json` merged for local paths, MCP servers, a local `MEMORY.md` by scope, session transcripts |
+| `pull all` | Symlinks for skills/commands/hooks/plans, `CLAUDE.md` and `statusline.py` if the vault carries them, `settings.json` merged for local paths, MCP servers, host scripts and systemd units, a local `MEMORY.md` by scope, session transcripts |
 | Hooks | `SessionStart` pulls and prints where you are, `Stop` and `SessionEnd` push |
-| Check | `tools/tests/run-all.sh` — three rigs; worth running once on a fresh machine to confirm the engine works there |
+| Check | `tools/tests/run-all.sh` — five rigs; worth running once on a fresh machine to confirm the engine works there |
 
 ### One thing to know before the first pull
 

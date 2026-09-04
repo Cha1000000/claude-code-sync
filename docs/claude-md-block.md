@@ -68,6 +68,21 @@ straight away, without putting it off: `/sync-mcp <name> --not-here` (everywhere
 except this machine) or `--here` (only here). Otherwise it travels to the other
 machines and fails silently there at every session start.
 
+## Host scripts and systemd units
+
+Some of what serves Claude Code lives outside `~/.claude`: scripts in
+`~/.local/bin`, timers in `~/.config/systemd/user`. The vault carries those too,
+but **only what is listed explicitly** — these directories are shared with the
+rest of the machine's life. Anything that does not serve Claude stays out; don't
+propose putting it there.
+
+Take a file under sync with `/sync-host add <path>`. The default scope is the
+current OS rather than `global`: host files are almost always tied to their system.
+
+On `pull` scripts get their `x` bit back, and units with an `[Install]` section
+are enabled automatically. The `systemd` category only applies on Linux,
+whatever the scope. A file edited in place is never overwritten silently.
+
 ## Commands
 
 - `/sync-push [all|session|tools|memory]` — send this machine's state
@@ -75,6 +90,8 @@ machines and fails silently there at every session start.
 - `/sync-status` — what differs
 - `/sync-bind <key> [path]` — bind a project to its path on this machine
 - `/sync-mcp [name] [--here|--not-here|--global]` — MCP servers and their scope
+- `/sync-host [add <path>] [<key>] [--here|--not-here|--global]` — host scripts
+  and systemd units
 - `/sync-ignore [reason]` — keep this session out of the vault
 - `/sync-forget [id]` — forget a session everywhere, here and on every machine
 
@@ -92,6 +109,15 @@ machines.
 
 `/sync-forget` is irreversible and deletes the local transcript too (for a live
 session, once it closes). Do not reach for it when I only asked to stop syncing.
+
+**A whole project** is `/sync-ignore --project <path> --project-wide`. You need it
+where sessions are created on a schedule: every run of a cron job is a new
+session, so marking them one by one is pointless. Undo it with
+`/sync-ignore --undo <key>`.
+
+**Empty sessions never reach the vault at all** — claude.ai bridge stubs and
+sessions holding a single slash command are filtered out on `push`. There is no
+need to `forget` them afterwards.
 
 ## What not to do
 

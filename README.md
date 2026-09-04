@@ -45,6 +45,7 @@ required.
 | **MCP servers** | Rendered from a template, with per-machine scopes and secrets stripped |
 | **Plugins** | The list, so a new machine tells you what to install |
 | **Settings** | `settings.json`, merged rather than overwritten |
+| **Host files** | Scripts from `~/.local/bin` and systemd units — only the ones you list |
 
 Never synced, deliberately: `.credentials.json` (OAuth tokens — on macOS they
 live in Keychain anyway), the machine passport, your secrets file, plugin caches,
@@ -222,6 +223,7 @@ Hooks do the work: `SessionStart` pulls and tells Claude which machine it is on,
 | `/sync-status` | what differs, without changing anything |
 | `/sync-bind <key> [path]` | bind a project to its path here |
 | `/sync-mcp [name] [--here\|--not-here\|--global]` | MCP servers and their scopes |
+| `/sync-host [add <path>] [<key>] [--here\|--not-here\|--global]` | host scripts and systemd units |
 | `/sync-ignore [reason]` | keep this session out of the vault |
 | `/sync-forget [id]` | forget a session everywhere (irreversible) |
 
@@ -233,10 +235,40 @@ Your vault is private, but two things are worth knowing.
 has to go on *early*: the background hook sends the transcript every few minutes,
 so anything said before the mark is already in the vault.
 
+**A whole project** is `/sync-ignore --project <path> --project-wide`. You need
+this where sessions are created on a schedule: every run of a cron job is a new
+session, so marking them one by one is pointless. Undo it by the project key:
+`--undo <key>`.
+
+**Empty sessions never leave at all.** The stubs created by the claude.ai bridge,
+and sessions where only a slash command was pressed, are filtered out on push:
+there is nothing in them, yet they still take up room in the history.
+
 **Something that already left** is `/sync-forget`. It deletes the copy in the
 vault, leaves a tombstone so the other machines drop theirs on the next pull, and
 removes the local transcript. It does this with an ordinary commit — git history
 is not rewritten, so clones made earlier still hold the old commits.
+
+## Host files: scripts and systemd units
+
+Some of what serves Claude Code lives outside `~/.claude` — a script in
+`~/.local/bin`, a timer in `~/.config/systemd/user`. The vault carries those too,
+but **only the ones you list**: these directories are shared with the rest of the
+machine's life, which has no business in a synced repository.
+
+```bash
+/sync-host add ~/.local/bin/my-script.sh   # take it under sync
+/sync-host                                  # what travels, and where it applies
+```
+
+The default scope is the current OS rather than "everywhere" — host files are
+almost always tied to their system. On `pull` scripts get their `x` bit back (git
+does not carry it), and units with an `[Install]` section are enabled for you. The
+`systemd` category only ever applies on Linux: macOS schedules through launchd,
+Windows through Task Scheduler.
+
+A file you edited in place is not overwritten — the vault keeps a snapshot of what
+last arrived, and anything that diverged from it is left alone.
 
 ## Extras
 
