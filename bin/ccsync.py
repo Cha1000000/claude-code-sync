@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ccsync_lib import (conflicts, identity, ignore, memoryscope,
+from ccsync_lib import (conflicts, hostfiles, identity, ignore, memoryscope,
                         migrate_registry, scopes, sessions, tools)
 from ccsync_lib.gitutil import Git
 from ccsync_lib.i18n import tr
@@ -258,6 +258,12 @@ def _push_tools(context: Context, mapper: PathMapper) -> list[str]:
 			target = vault.tools_dir / name
 			target.parent.mkdir(parents=True, exist_ok=True)
 			target.write_bytes(source.read_bytes())
+	sent = hostfiles.export(
+		config.parent, config, vault.tools_dir / hostfiles.HOST_DIR_NAME,
+		hostfiles.load_registry(vault.tools_dir / hostfiles.REGISTRY_FILE),
+		mapper, machine)
+	if sent:
+		done.append(f"host({len(sent)})")
 	return done
 
 
@@ -292,6 +298,9 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 		if origin:
 			project_path = origin
 	key = context.vault.ensure_project_key(project_path, machine.machine_id, home=machine.home)
+	if ignored.is_project_ignored(key):
+		context.say(tr("[ccsync] проект {key} не синхронизируется — пропускаю", key=key))
+		return []
 	report = sessions.push_session(
 		transcript,
 		context.vault.session_dir_for(key),
@@ -455,6 +464,24 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 					   names=", ".join(absent)))
 		context.say(tr("[ccsync]   поставить: claude plugin install {names}",
 					   names=" ".join(absent)))
+
+	host = hostfiles.apply(
+		config.parent, config, vault.tools_dir / hostfiles.HOST_DIR_NAME,
+		hostfiles.load_registry(vault.tools_dir / hostfiles.REGISTRY_FILE),
+		mapper, context.require_machine(), dry_run=args.dry_run)
+	if host.applied:
+		context.say(tr("[ccsync] обвязка: {names}", names=", ".join(host.applied)))
+	if host.enabled:
+		context.say(tr("[ccsync] юниты включены: {names}", names=", ".join(host.enabled)))
+	for key in host.kept_modified:
+		context.say(tr(
+			"[ccsync] {key} правлен здесь руками — оставлен как есть. "
+			"Отдать свою версию: {command} push tools", key=key, command=_ccsync_hint()))
+	for name, problem in host.failed:
+		context.say(tr("[ccsync] юнит {name} не включился: {problem}",
+					   name=name, problem=problem))
+		context.say(tr("[ccsync]   включить вручную: systemctl --user enable --now {name}",
+					   name=name))
 
 
 def _pull_memory(context: Context, machine: identity.Machine) -> None:
@@ -621,17 +648,28 @@ def _session_target(context: Context, args) -> tuple[str, Path | None, str]:
 	return session_id, transcript, key
 
 
+def _project_key_for_ignore(context: Context, args) -> str:
+	"""Ключ проекта, который помечаем целиком: из привязки, иначе из пути."""
+	path = str(Path(args.project or os.getcwd()).resolve())
+	return context.mapper().project_key_for(path) or project_key_from_path(path)
+
+
 def cmd_ignore(context: Context, args) -> int:
 	context.require_machine()
 	ignored = ignore.IgnoreList.for_config(context.config_dir)
 
 	if args.list:
-		if not ignored.entries:
+		if not ignored.entries and not ignored.projects:
 			print(tr("Помеченных сессий нет."))
 			return 0
-		print(tr("Не синхронизируются ({count}):", count=len(ignored.entries)))
-		for entry in sorted(ignored.entries.values(), key=lambda e: e.marked_at):
-			print(f"  {entry.describe()}")
+		if ignored.projects:
+			print(tr("Проекты целиком ({count}):", count=len(ignored.projects)))
+			for key, reason in sorted(ignored.projects.items()):
+				print(f"  {key}" + (f" — {reason}" if reason else ""))
+		if ignored.entries:
+			print(tr("Не синхронизируются ({count}):", count=len(ignored.entries)))
+			for entry in sorted(ignored.entries.values(), key=lambda e: e.marked_at):
+				print(f"  {entry.describe()}")
 		return 0
 
 	if args.undo:
@@ -639,9 +677,23 @@ def cmd_ignore(context: Context, args) -> int:
 			print(tr("Пометка снята: {id} — сессия снова синхронизируется.",
 					 id=args.undo[:8]))
 			return 0
+		if ignored.unignore_project(args.undo):
+			print(tr("Пометка снята: проект {key} снова синхронизируется.", key=args.undo))
+			return 0
 		print(tr("Сессия {id} и не была помечена.", id=args.undo[:8]),
 			  file=sys.stderr)
 		return 1
+
+	if args.project_wide:
+		key = _project_key_for_ignore(context, args)
+		ignored.ignore_project(key, reason=args.reason)
+		print(tr("Проект {key} больше не уедет в хранилище — целиком, "
+				 "включая будущие сессии.", key=key))
+		existing = context.vault.session_dir_for(key)
+		if existing.is_dir() and any(existing.glob("*.jsonl")):
+			print(tr("ВНИМАНИЕ: копии уже лежат в хранилище — пометка их не удаляет."))
+			print(tr("  Убрать каждую:  /sync-forget <id>"))
+		return 0
 
 	session_id, _transcript, key = _session_target(context, args)
 	if not session_id:
@@ -958,6 +1010,140 @@ def _unknown_machines(context: Context, scope: list[str]) -> list[str]:
 	return unknown
 
 
+def _host_registry_path(context: Context) -> Path:
+	return context.vault.tools_dir / hostfiles.REGISTRY_FILE
+
+
+def cmd_host(context: Context, args) -> int:
+	"""Скрипты и юниты claude-обвязки: что возится и куда применимо."""
+	machine = context.require_machine()
+	registry_path = _host_registry_path(context)
+	registry = hostfiles.load_registry(registry_path)
+
+	if getattr(args, "add", None):
+		return _add_host_file(context, args, machine, registry, registry_path)
+	if args.name:
+		return _set_host_scope(context, args, machine, registry, registry_path)
+	if not registry:
+		print(tr("В хранилище нет ни одного файла обвязки. "
+				 "Добавить: {command} host add ~/.local/bin/имя",
+				 command=_ccsync_hint()))
+		return 0
+
+	home = context.config_dir.parent
+	host_dir = context.vault.tools_dir / hostfiles.HOST_DIR_NAME
+	width = max(len(key) for key in registry)
+	foreign = 0
+	for key in sorted(registry):
+		scope = hostfiles.scope_for(registry, key)
+		here = hostfiles.applies_here(registry, key, machine)
+		foreign += 0 if here else 1
+		print(f"  {key:<{width}}  {scopes.format(scope):<24}  "
+			  + tr("здесь: {answer}", answer=tr("да ") if here else tr("нет"))
+			  + f"  {_host_state(context, home, host_dir, key, here)}")
+	if foreign:
+		print("\n" + tr("Не для этой машины: {count}. "
+						"Вернуть общим: {command} host scope <имя> --global",
+						count=foreign, command=_ccsync_hint()))
+	return 0
+
+
+def _host_state(context: Context, home: Path, host_dir: Path, key: str, here: bool) -> str:
+	"""Короткое описание фактического состояния файла на этой машине."""
+	stored = hostfiles._read_text(hostfiles.vault_path(host_dir, key))
+	target = hostfiles.local_path(home, key)
+	current = hostfiles._read_text(target)
+	if not here:
+		if current is None:
+			return tr("нет здесь")
+		return tr("ЕСТЬ локально (scope не для этой машины)")
+	if stored is None:
+		return tr("ещё не отдан — уедет при push")
+	rendered = context.mapper().detokenize(stored)
+	if current is None:
+		return tr("будет положен при pull")
+	if current != rendered:
+		base = hostfiles._read_text(hostfiles._base_path(context.config_dir, key))
+		if base is not None and current != base:
+			return tr("правлен здесь руками")
+		return tr("будет обновлён при pull")
+	if hostfiles.category_of(key) == "systemd" and hostfiles.wants_enable(rendered):
+		return tr("ок, юнит")
+	return tr("ок")
+
+
+def _add_host_file(context: Context, args, machine, registry, registry_path) -> int:
+	"""Взять файл под синхронизацию, определив категорию по его расположению."""
+	home = context.config_dir.parent
+	path = Path(args.add).expanduser()
+	if not path.is_absolute():
+		path = Path(os.getcwd()) / path
+	path = path.resolve()
+	if not path.is_file():
+		print(tr("Файла {path} нет.", path=path), file=sys.stderr)
+		return 1
+
+	key = None
+	for category, relative in hostfiles.CATEGORIES.items():
+		root = (home / relative).resolve()
+		try:
+			key = f"{category}/{path.relative_to(root).as_posix()}"
+			break
+		except ValueError:
+			continue
+	if key is None:
+		print(tr("{path} лежит вне известных каталогов. Ожидается один из: {dirs}",
+				 path=path, dirs=", ".join(f"~/{d}" for d in hostfiles.CATEGORIES.values())),
+			  file=sys.stderr)
+		return 1
+
+	if key in registry:
+		print(tr("{key} уже синхронизируется ({scope})",
+				 key=key, scope=scopes.format(hostfiles.scope_for(registry, key))))
+		return 0
+	# По умолчанию — только эта ОС: обвязка почти всегда завязана на неё, а
+	# ошибочный `global` разнёс бы неработающий файл по всем машинам.
+	scope = [scopes.SCOPE_GLOBAL] if args.globally else [scopes.OS_PREFIX + machine.os]
+	registry[key] = scope
+	hostfiles.save_registry(registry_path, registry)
+	print(tr("{key}: под синхронизацией ({scope})", key=key, scope=scopes.format(scope)))
+	print(tr("Отдать в хранилище: {command} push tools", command=_ccsync_hint()))
+	return 0
+
+
+def _set_host_scope(context: Context, args, machine, registry, registry_path) -> int:
+	name = args.name
+	if name not in registry:
+		print(tr("Файла {name} в реестре нет. Известные: {names}",
+				 name=name, names=", ".join(sorted(registry)) or "—"), file=sys.stderr)
+		return 1
+	current = hostfiles.scope_for(registry, name)
+	if args.globally:
+		new_scope = [scopes.SCOPE_GLOBAL]
+	elif args.here:
+		new_scope = [machine.machine_id]
+	elif args.not_here:
+		new_scope = scopes.without_machine(current, machine)
+	elif args.value:
+		new_scope = scopes.parse(args.value)
+	else:
+		print(f"{name}: {scopes.format(current)}")
+		return 0
+	unknown = _unknown_machines(context, new_scope)
+	if unknown:
+		print(tr("ВНИМАНИЕ: в реестре нет машин: {names}. "
+				 "Опечатка? Известные: {known}",
+				 names=", ".join(unknown),
+				 known=", ".join(sorted(context.vault.load_machines()))),
+			  file=sys.stderr)
+	registry[name] = new_scope
+	hostfiles.save_registry(registry_path, registry)
+	print(f"{name}: {scopes.format(current)} → {scopes.format(new_scope)} "
+		  f"({scopes.describe(new_scope, machine)})")
+	print(tr("Применить здесь: {command} pull tools", command=_ccsync_hint()))
+	return 0
+
+
 def cmd_bind(context: Context, args) -> int:
 	machine = context.require_machine()
 	path = args.path or os.getcwd()
@@ -1184,7 +1370,9 @@ def build_parser() -> argparse.ArgumentParser:
 	ignore_cmd.add_argument("--project", help=tr("путь проекта (по умолчанию — текущий каталог)"))
 	ignore_cmd.add_argument("--reason", default="", help=tr("зачем помечена"))
 	ignore_cmd.add_argument("--list", action="store_true", help=tr("показать помеченные"))
-	ignore_cmd.add_argument("--undo", metavar="ID", help=tr("снять пометку"))
+	ignore_cmd.add_argument("--undo", metavar="ID", help=tr("снять пометку (id сессии или ключ проекта)"))
+	ignore_cmd.add_argument("--project-wide", dest="project_wide", action="store_true",
+							help=tr("пометить проект целиком, включая будущие сессии"))
 	ignore_cmd.set_defaults(func=cmd_ignore, from_hook=False)
 
 	forget = subparsers.add_parser("forget", help=tr("забыть сессию везде (необратимо)"))
@@ -1240,6 +1428,36 @@ def build_parser() -> argparse.ArgumentParser:
 	scope_cmd.add_argument("--global", dest="globally", action="store_true",
 						   help=tr("вернуть в общие (значение по умолчанию)"))
 	scope_cmd.set_defaults(func=cmd_mcp)
+
+	host = subparsers.add_parser(
+		"host", help=tr("скрипты и systemd-юниты claude-обвязки"),
+		description=tr("Файлы вне ~/.claude, которые обслуживают Claude Code: "
+					   "~/.local/bin и ~/.config/systemd/user. Возится только то, "
+					   "что перечислено явно."))
+	host_sub = host.add_subparsers(dest="host_command")
+	host.set_defaults(func=cmd_host, name=None, value=None, add=None,
+					  here=False, not_here=False, globally=False)
+
+	host_add = host_sub.add_parser("add", help=tr("взять файл под синхронизацию"))
+	host_add.add_argument("add", metavar="path", help=tr("путь к файлу"))
+	host_add.add_argument("--global", dest="globally", action="store_true",
+						  help=tr("применим на любой ОС (по умолчанию — только текущая)"))
+	host_add.set_defaults(func=cmd_host, name=None, value=None,
+						  here=False, not_here=False)
+
+	host_scope = host_sub.add_parser(
+		"scope", help=tr("показать или задать scope файла"),
+		description=tr("Без значения — показать текущий scope. Значения: global, "
+					   "<машина>, os:linux, !<машина> (везде, кроме неё)."))
+	host_scope.add_argument("name", help=tr("ключ файла, например bin/имя.sh"))
+	host_scope.add_argument("value", nargs="*", help=tr("элементы scope"))
+	host_scope.add_argument("--here", action="store_true",
+							help=tr("только эта машина"))
+	host_scope.add_argument("--not-here", dest="not_here", action="store_true",
+							help=tr("везде, кроме этой машины"))
+	host_scope.add_argument("--global", dest="globally", action="store_true",
+							help=tr("вернуть в общие"))
+	host_scope.set_defaults(func=cmd_host, add=None)
 	return parser
 
 

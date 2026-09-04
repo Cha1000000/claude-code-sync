@@ -129,6 +129,38 @@ check "после undo bbbb снова уезжает" "да" \
 check "undo несуществующей пометки — понятная ошибка, код 1" "1" \
 	"$("$STAND/m1.sh" ignore --undo 00000000-0000-0000-0000-000000000000 >/dev/null 2>&1; echo $?)"
 
+echo "ТЕСТ 9 — пустая сессия в хранилище не нужна"
+E=eeeeeeee-9999-9999-9999-999999999999
+# Ровно то, что заводит связь с claude.ai: заглушка без единой реплики.
+printf '{"type":"bridge-session","sessionId":"%s","lastSequenceNum":0}\n' "$E" \
+	> "$STAND/m1/.claude/projects/$SLUG/$E.jsonl"
+out9=$("$STAND/m1.sh" push session --session $E 2>&1)
+check "пустая сессия не уехала" "нет" "$(has $E)"
+check "сказано, почему" "да" \
+	"$(echo "$out9" | grep -q 'пустая сессия' && echo да || echo нет)"
+# А стоит появиться содержимому — уезжает как обычная.
+printf '{"type":"assistant","sessionId":"%s","message":{"role":"assistant","content":"ответ"}}\n' "$E" \
+	>> "$STAND/m1/.claude/projects/$SLUG/$E.jsonl"
+rm -f "$STAND/m1/.claude/.ccsync-last-push"
+"$STAND/m1.sh" push session --session $E >/dev/null 2>&1
+check "наполнившаяся сессия уехала" "да" "$(has $E)"
+
+echo "ТЕСТ 10 — проект целиком не синхронизируется"
+F=ffffffff-9999-9999-9999-999999999999
+printf '{"type":"user","cwd":"%s","sessionId":"%s","message":{"role":"user","content":"текст"}}\n' \
+	"$STAND/m1/work" "$F" > "$STAND/m1/.claude/projects/$SLUG/$F.jsonl"
+"$STAND/m1.sh" ignore --project "$STAND/m1/work" --project-wide --reason "cron" >/dev/null
+rm -f "$STAND/m1/.claude/.ccsync-last-push"
+"$STAND/m1.sh" push session --session $F >/dev/null 2>&1
+check "сессия помеченного проекта не уехала" "нет" "$(has $F)"
+check "проект виден в списке" "да" \
+	"$("$STAND/m1.sh" ignore --list | grep -q 'Проекты целиком' && echo да || echo нет)"
+check "undo по ключу проекта снимает пометку" "0" \
+	"$("$STAND/m1.sh" ignore --undo work >/dev/null 2>&1; echo $?)"
+rm -f "$STAND/m1/.claude/.ccsync-last-push"
+"$STAND/m1.sh" push session --session $F >/dev/null 2>&1
+check "после undo проект снова синхронизируется" "да" "$(has $F)"
+
 echo
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $fail

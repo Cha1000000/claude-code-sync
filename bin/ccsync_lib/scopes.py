@@ -21,6 +21,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from .i18n import tr
 from .identity import Machine
 
@@ -112,3 +115,52 @@ def describe(scope: list[str], machine: Machine) -> str:
 	if matches(scope, machine):
 		return tr("применим здесь")
 	return tr("не для этой машины")
+
+
+# --- карта «имя → scope» в файле ----------------------------------------
+#
+# Одним и тем же файлом описываются и MCP-серверы (tools/mcp-scopes.json), и
+# файлы обвязки (tools/host-files.json): имя, а рядом — где оно применимо.
+
+
+def load_map(path: Path) -> dict[str, list[str]]:
+	"""Прочитать карту. Отсутствие ключа означает `global`."""
+	try:
+		raw = json.loads(path.read_text(encoding="utf-8"))
+	except (OSError, json.JSONDecodeError, ValueError):
+		return {}
+	if not isinstance(raw, dict):
+		return {}
+	parsed: dict[str, list[str]] = {}
+	for name, value in raw.items():
+		scope = parse(value)
+		if scope:
+			parsed[str(name)] = scope
+	return parsed
+
+
+def save_map(path: Path, scope_map: dict[str, list[str]], *,
+			 keep_global: bool = False) -> None:
+	"""Записать карту.
+
+	По умолчанию `global` не храним: это и есть значение по умолчанию, а список
+	сущностей всё равно берётся из другого места (для MCP — из шаблона).
+	Там, где карта сама и есть список — как у файлов обвязки, — запись нужна
+	даже для `global`: выкинув её, мы забыли бы, что файл вообще синхронизируется.
+	"""
+	payload: dict[str, object] = {}
+	for name, scope in sorted(scope_map.items()):
+		if not scope or (is_global(scope) and not keep_global):
+			continue
+		payload[name] = scope[0] if len(scope) == 1 else scope
+	if not payload and not path.exists():
+		return
+	path.parent.mkdir(parents=True, exist_ok=True)
+	path.write_text(
+		json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+		encoding="utf-8",
+	)
+
+
+def entry_for(scope_map: dict[str, list[str]], name: str) -> list[str]:
+	return scope_map.get(name) or [SCOPE_GLOBAL]

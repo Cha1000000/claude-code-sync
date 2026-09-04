@@ -113,6 +113,10 @@ class IgnoreList:
 	def __init__(self, path: Path) -> None:
 		self.path = Path(path)
 		self.entries: dict[str, IgnoreEntry] = {}
+		# Проекты, чьи сессии не уезжают целиком. Помечать каждую по отдельности
+		# бессмысленно там, где транскрипт заводится расписанием: у cron-задачи
+		# каждый запуск — новая сессия, и список рос бы вечно.
+		self.projects: dict[str, str] = {}
 		self._load()
 
 	@classmethod
@@ -128,12 +132,16 @@ class IgnoreList:
 			# Битый список не должен блокировать работу: считаем его пустым,
 			# но и не перезаписываем молча — перезапись случится при mark().
 			return
-		raw = data.get("ignored") if isinstance(data, dict) else None
-		if not isinstance(raw, dict):
+		if not isinstance(data, dict):
 			return
-		for session_id, payload in raw.items():
-			if isinstance(payload, dict):
-				self.entries[session_id] = IgnoreEntry.from_dict(session_id, payload)
+		raw = data.get("ignored")
+		if isinstance(raw, dict):
+			for session_id, payload in raw.items():
+				if isinstance(payload, dict):
+					self.entries[session_id] = IgnoreEntry.from_dict(session_id, payload)
+		projects = data.get("ignored_projects")
+		if isinstance(projects, dict):
+			self.projects = {str(key): str(value) for key, value in projects.items()}
 
 	def save(self) -> None:
 		_write_json_atomic(
@@ -141,6 +149,7 @@ class IgnoreList:
 			{
 				"version": 1,
 				"ignored": {key: entry.to_dict() for key, entry in self.entries.items()},
+				"ignored_projects": dict(sorted(self.projects.items())),
 			},
 		)
 
@@ -148,6 +157,20 @@ class IgnoreList:
 
 	def is_ignored(self, session_id: str | None) -> bool:
 		return bool(session_id) and session_id in self.entries
+
+	def is_project_ignored(self, project_key: str | None) -> bool:
+		return bool(project_key) and project_key in self.projects
+
+	def ignore_project(self, project_key: str, reason: str = "") -> None:
+		self.projects[project_key] = reason
+		self.save()
+
+	def unignore_project(self, project_key: str) -> bool:
+		if project_key not in self.projects:
+			return False
+		del self.projects[project_key]
+		self.save()
+		return True
 
 	def get(self, session_id: str) -> IgnoreEntry | None:
 		return self.entries.get(session_id)

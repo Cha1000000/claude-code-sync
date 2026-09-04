@@ -4,7 +4,7 @@
 set -u
 cd "$(dirname "$0")"
 total_ok=0; total_fail=0
-for stand in private-sessions.sh registries.sh session-keys.sh session-chain.sh; do
+for stand in private-sessions.sh registries.sh session-keys.sh session-chain.sh host-files.sh; do
 	echo "══ $stand"
 	out=$(bash "./$stand" 2>&1)
 	echo "$out" | grep -E "^(ТЕСТ|  [✓✗])" || true

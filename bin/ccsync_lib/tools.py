@@ -336,37 +336,21 @@ def read_global_config(config_dir: Path) -> dict:
 		return {}
 
 
+# Карта «имя → scope» устроена одинаково для MCP-серверов и для файлов обвязки,
+# поэтому сама работа с файлом живёт в scopes; здесь — привычные имена.
+
 def load_mcp_scopes(path: Path) -> dict[str, list[str]]:
 	"""Карта «сервер → scope». Отсутствие ключа означает `global`."""
-	raw = _read_json(path, {})
-	if not isinstance(raw, dict):
-		return {}
-	parsed: dict[str, list[str]] = {}
-	for name, value in raw.items():
-		scope = scopes.parse(value)
-		if scope:
-			parsed[str(name)] = scope
-	return parsed
+	return scopes.load_map(path)
 
 
 def save_mcp_scopes(path: Path, scope_map: dict[str, list[str]]) -> None:
 	"""Записать карту. `global` не храним: это и есть значение по умолчанию."""
-	payload: dict[str, object] = {}
-	for name, scope in sorted(scope_map.items()):
-		if not scope or scopes.is_global(scope):
-			continue
-		payload[name] = scope[0] if len(scope) == 1 else scope
-	if not payload and not path.exists():
-		return
-	path.parent.mkdir(parents=True, exist_ok=True)
-	path.write_text(
-		json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-		encoding="utf-8",
-	)
+	scopes.save_map(path, scope_map)
 
 
 def mcp_scope_for(scope_map: dict[str, list[str]], name: str) -> list[str]:
-	return scope_map.get(name) or [scopes.SCOPE_GLOBAL]
+	return scopes.entry_for(scope_map, name)
 
 
 def export_mcp(

@@ -498,6 +498,55 @@ def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 	return removed, spared
 
 
+# Служебные обёртки, которые Claude Code пишет как реплики пользователя:
+# сообщением человека ни одна из них не является.
+SERVICE_PREFIXES = (
+	"<local-command",
+	"<command-name>",
+	"<system-reminder",
+	"Caveat:",
+)
+
+# Страховка от ошибки разбора: разговор такого размера пустым не бывает,
+# и тратить время на его перебор незачем.
+NEVER_EMPTY_ABOVE_BYTES = 512 * 1024
+
+
+def is_empty_transcript(transcript: Path) -> bool:
+	"""Ни одной реплики человека и ни одного ответа модели.
+
+	Такие файлы заводятся сами: заглушка `bridge-session` от связи с claude.ai
+	и сессия, где успели нажать только слэш-команду вроде /model. Содержимого
+	в них нет по определению, а в хранилище они занимают место и требуют потом
+	отдельного `forget`, чтобы уйти оттуда.
+	"""
+	try:
+		if transcript.stat().st_size > NEVER_EMPTY_ABOVE_BYTES:
+			return False
+		with transcript.open(encoding="utf-8", errors="replace") as handle:
+			for line in handle:
+				line = line.strip()
+				if not line:
+					continue
+				try:
+					record = json.loads(line)
+				except ValueError:
+					# Битую строку считаем содержимым: лучше отправить лишнее,
+					# чем потерять разговор из-за сбоя разбора.
+					return False
+				kind = record.get("type")
+				if kind == "assistant":
+					return False
+				if kind != "user" or record.get("isMeta") or record.get("isCompactSummary"):
+					continue
+				text = _preview(record, limit=200)
+				if text and not text.startswith(SERVICE_PREFIXES):
+					return False
+	except OSError:
+		return False
+	return True
+
+
 def push_session(
 	transcript: Path,
 	vault_session_dir: Path,
@@ -512,6 +561,8 @@ def push_session(
 	if size > max_bytes:
 		reason = f"{size / 1048576:.0f} МБ — больше порога {max_bytes / 1048576:.0f} МБ, пропущен"
 		return TransferReport([], [(transcript.name, reason)])
+	if is_empty_transcript(transcript):
+		return TransferReport([], [(transcript.name, "пустая сессия, отправлять нечего")])
 	destination = vault_session_dir / transcript.name
 	transform_transcript(transcript, destination, mapper, mode="tokenize", cwd_override=None)
 	return TransferReport([transcript.name], [])
