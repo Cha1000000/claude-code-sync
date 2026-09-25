@@ -29,6 +29,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -130,15 +132,71 @@ def _cipher_path(secrets_dir: Path, key: str) -> Path:
 	return secrets_dir / (key + SUFFIX)
 
 
+# Отпечатки последнего синхронизированного состояния каждого секрета: SHA-256
+# открытого текста и списка получателей. Сам секрет здесь не хранится — второй
+# незашифрованной копии ключа на диске быть не должно.
+BASE_PATH = ".claude/ccsync-secrets-base.json"
+
+
+def _digest(data: bytes) -> str:
+	return hashlib.sha256(data).hexdigest()
+
+
+def _recipients_digest(recipients: list[str]) -> str:
+	return _digest("\n".join(sorted(recipients)).encode("utf-8"))
+
+
+def _load_base(home: Path) -> dict[str, dict[str, str]]:
+	try:
+		data = json.loads((home / BASE_PATH).read_text(encoding="utf-8"))
+	except (OSError, ValueError):
+		return {}
+	return data if isinstance(data, dict) else {}
+
+
+def _save_base(home: Path, base: dict[str, dict[str, str]]) -> None:
+	target = home / BASE_PATH
+	target.parent.mkdir(parents=True, exist_ok=True)
+	target.write_text(json.dumps(base, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+					  encoding="utf-8")
+	target.chmod(0o600)
+
+
+def _decrypt(home: Path, cipher: Path) -> bytes | None:
+	identity = identity_path(home)
+	if not identity.exists() or not age_available():
+		return None
+	result = subprocess.run(["age", "--decrypt", "--identity", str(identity), str(cipher)],
+							capture_output=True)
+	return result.stdout if result.returncode == 0 else None
+
+
+def _encrypt(data: bytes, recipients: list[str], target: Path) -> bool:
+	target.parent.mkdir(parents=True, exist_ok=True)
+	command = ["age", "--encrypt"]
+	for recipient in recipients:
+		command += ["--recipient", recipient]
+	command += ["--output", str(target)]
+	return subprocess.run(command, input=data, capture_output=True).returncode == 0
+
+
 def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		   machine: Machine) -> list[str]:
-	"""Зашифровать локальные секреты в хранилище. Возвращает имена отданных."""
+	"""Зашифровать в хранилище секреты, правленные здесь. Возвращает имена отданных.
+
+	Секрет, не менявшийся здесь со времени последней синхронизации, заново не
+	шифруется: правда о нём — в хранилище, и её могла обновить другая машина,
+	которую эта ещё не подтянула. Исключение — сменился список получателей:
+	тогда перешифровывается содержимое хранилища, а не устаревшая локальная копия.
+	"""
 	if not registry or not age_available():
 		return []
 	recipients = load_recipients(secrets_dir)
 	if not recipients:
 		return []
 
+	base = _load_base(home)
+	recipients_now = _recipients_digest(recipients)
 	sent: list[str] = []
 	for key, scope in registry.items():
 		if not scopes.matches(scopes.parse(scope), machine):
@@ -146,26 +204,88 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		source = home / key
 		if not source.exists():
 			continue
+		local = source.read_bytes()
+		local_digest = _digest(local)
 		target = _cipher_path(secrets_dir, key)
-		target.parent.mkdir(parents=True, exist_ok=True)
+		known = base.get(key) or {}
 
-		command = ["age", "--encrypt"]
-		for recipient in recipients:
-			command += ["--recipient", recipient]
-		command += ["--output", str(target)]
-		result = subprocess.run(command, input=source.read_bytes(),
-								capture_output=True)
-		if result.returncode == 0:
+		if target.exists() and not known:
+			# Первая синхронизация после обновления движка: если в хранилище то же
+			# самое, просто запоминаем отпечаток — перешифровывать незачем.
+			stored = _decrypt(home, target)
+			if stored is not None and stored == local:
+				known = base[key] = {"plain": local_digest}
+
+		if target.exists() and known.get("plain") == local_digest:
+			if known.get("recipients") == recipients_now:
+				continue
+			stored = _decrypt(home, target)
+			if stored is None or not _encrypt(stored, recipients, target):
+				continue
+			known["recipients"] = recipients_now
+			base[key] = known
 			sent.append(key)
+			continue
+
+		if _encrypt(local, recipients, target):
+			base[key] = {"plain": local_digest, "recipients": recipients_now}
+			sent.append(key)
+	_save_base(home, base)
 	return sent
 
 
 def apply(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		  machine: Machine) -> SecretsReport:
-	"""Расшифровать применимые здесь секреты и разложить по местам."""
+	"""Расшифровать применимые здесь секреты и разложить по местам.
+
+	Локальный файл, не менявшийся со времени последней синхронизации, обновляется
+	из хранилища. Правленный здесь (или без отпечатка) — не трогаем: молча
+	затереть секрет хуже, чем сообщить о расхождении.
+	"""
 	report = SecretsReport()
 	if not registry:
 		return report
+
+	identity = identity_path(home)
+	have_key = identity.exists() and age_available()
+	base = _load_base(home)
+
+	for key, scope in registry.items():
+		if not scopes.matches(scopes.parse(scope), machine):
+			continue
+		cipher = _cipher_path(secrets_dir, key)
+		if not cipher.exists():
+			continue
+		if not have_key:
+			report.locked.append(key)
+			continue
+
+		plain = _decrypt(home, cipher)
+		if plain is None:
+			report.locked.append(key)
+			continue
+
+		known = base.get(key) or {}
+		target = home / key
+		if target.exists():
+			current = target.read_bytes()
+			if current == plain:
+				if known.get("plain") != _digest(plain):
+					base[key] = {**known, "plain": _digest(plain)}
+				continue
+			if known.get("plain") != _digest(current):
+				# Локальная версия другая и её правили здесь (или отпечатка нет):
+				# возможно, здесь обновили ключ. Говорим и оставляем как есть.
+				report.diverged.append(key)
+				continue
+
+		target.parent.mkdir(parents=True, exist_ok=True)
+		target.write_bytes(plain)
+		target.chmod(0o600)
+		base[key] = {**known, "plain": _digest(plain)}
+		report.applied.append(key)
+	_save_base(home, base)
+	return report
 
 	identity = identity_path(home)
 	have_key = identity.exists() and age_available()

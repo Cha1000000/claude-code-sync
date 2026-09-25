@@ -112,5 +112,51 @@ check "секрет вырезан"            yes "$(echo "$res" | sed -n 1p)"
 check "github-токен вырезан"      yes "$(echo "$res" | sed -n 2p)"
 check "обычный текст не тронут"   yes "$(echo "$res" | sed -n 3p)"
 
+sync1() { (cd "$STAND/m1vault" && git pull -q --rebase 2>/dev/null); }
+sync2() { (cd "$STAND/m2vault" && git pull -q --rebase 2>/dev/null); }
+K1="$STAND/m1/.claude/ccsync-age.key"
+vault_plain() { age --decrypt --identity "$1" "$2/tools/secrets/.claude/stand.key.age" 2>/dev/null; }
+
+echo "ТЕСТ 6 — правка на m2 уезжает, и нетронутый m1 её получает"
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+sync1
+check "в хранилище версия m2" "sk-stand-ДРУГОЙ-КЛЮЧ-НА-ЭТОЙ-МАШИНЕ" "$(vault_plain "$K1" "$STAND/m1vault")"
+"$STAND/m1.sh" pull tools >/dev/null 2>&1
+check "m1 обновился (не «разошлись»)" "sk-stand-ДРУГОЙ-КЛЮЧ-НА-ЭТОЙ-МАШИНЕ" "$(cat "$STAND/m1/.claude/stand.key")"
+grep -q "$SECRET" "$STAND/m1/.claude/ccsync-secrets-base.json" 2>/dev/null && plain_base=yes || plain_base=no
+check "в снимке нет открытого секрета" no "$plain_base"
+
+echo "ТЕСТ 7 — push устаревшей копии не затирает свежую"
+printf '%s' "sk-stand-ТРЕТЬЯ-ВЕРСИЯ-С-M1" > "$STAND/m1/.claude/stand.key"
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+sync2
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+sync1
+check "в хранилище осталась версия m1" "sk-stand-ТРЕТЬЯ-ВЕРСИЯ-С-M1" "$(vault_plain "$K1" "$STAND/m1vault")"
+"$STAND/m2.sh" pull tools >/dev/null 2>&1
+check "m2 получил версию m1" "sk-stand-ТРЕТЬЯ-ВЕРСИЯ-С-M1" "$(cat "$STAND/m2/.claude/stand.key")"
+
+echo "ТЕСТ 8 — push без изменений не перешифровывает"
+before=$(sha256sum "$STAND/m1vault/tools/secrets/.claude/stand.key.age" | cut -c1-64)
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+after=$(sha256sum "$STAND/m1vault/tools/secrets/.claude/stand.key.age" | cut -c1-64)
+check "шифротекст не менялся" "$before" "$after"
+
+echo "ТЕСТ 9 — новый получатель: перешифровывается хранилище, а не старая копия"
+printf '%s' "sk-stand-ЧЕТВЁРТАЯ-С-M2" > "$STAND/m2/.claude/stand.key"
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+# m2 заводит собственный ключ и просится в получатели
+K2="$STAND/m2/.claude/ccsync-age.key"
+rm -f "$K2"; age-keygen -o "$K2" 2>/dev/null; chmod 600 "$K2"
+sync2
+"$STAND/m2.sh" secrets add-recipient >/dev/null
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+# m1 подтягивает только хранилище: локально у него всё ещё третья версия
+sync1
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+sync2
+check "новый получатель расшифровывает" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K2" "$STAND/m2vault")"
+check "старый тоже" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K1" "$STAND/m2vault")"
+
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $((fail > 0))
