@@ -132,8 +132,9 @@ whose public key is in `tools/secrets/recipients.txt` can decrypt.
     /sync-secrets add-recipient        # let this machine decrypt
 
 Encryption and decryption happen inside `push tools` and `pull tools`. **The
-private key `~/.claude/ccsync-age.key` never enters git.** A decrypted file that
-differs from what arrived is not overwritten — `pull` reports it instead.
+private key `~/.claude/ccsync-age.key` never enters git.** A local secret you did
+not touch is updated on `pull`; one changed right here is left alone and
+reported. `push` encrypts only what changed here.
 
 **Transcripts are cleaned on push.** Keys end up in the conversation on their
 own — pasted into the chat, shown in `cat` output. Before the transcript leaves,

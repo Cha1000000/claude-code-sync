@@ -40,9 +40,10 @@ Comment on the result in plain language. Worth noticing:
   otherwise the new machine cannot decrypt them — it is not in the ciphertext yet;
 - if `pull` says the secrets cannot be decrypted, this machine has no key or `age`
   is not installed (`pacman -S age`, `apt install age`, `brew install age`);
-- a decrypted file that diverged from what arrived is **not overwritten** by
-  `pull` — you are told about the difference instead, since the secret may have
-  been updated right here. To send your version: `push tools`.
+- a local secret you did not touch is **updated** by `pull`; one that was changed
+  right here is **not overwritten** — you are told about the difference instead.
+  To send your version: `push tools`. `push` encrypts only what changed here, so a
+  stale copy never overwrites a newer key from another machine.
 
 Secrets are the only thing stored encrypted. The rest of the vault is plain
 text, so keys still must not be written into ordinary files (memory, templates,

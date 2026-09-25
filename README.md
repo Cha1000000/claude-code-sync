@@ -341,9 +341,13 @@ age-keygen -o ~/.claude/ccsync-age.key && chmod 600 ~/.claude/ccsync-age.key
 /sync-pull tools                 # the secrets land in place
 ```
 
-Without a key, `pull` says the secrets cannot be decrypted and touches nothing. A
-decrypted file that differs from what arrived is not overwritten either — the
-secret may have been updated right here, so you are told instead.
+Without a key, `pull` says the secrets cannot be decrypted and touches nothing.
+Like single files, secrets are protected in both directions — with a fingerprint
+of the last synced value (a SHA-256, never the secret itself): a local file you
+did not touch is updated on `pull`, one updated right here is left alone and you
+are told; `push` encrypts only what changed here, so an untouched stale copy never
+overwrites a newer key another machine sent. When the recipient list changes, what
+gets re-encrypted is the vault's current value, not the local copy.
 
 ## Extras
 
