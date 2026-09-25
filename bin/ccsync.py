@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ccsync_lib import (conflicts, hostfiles, identity, ignore, memoryscope,
-                        migrate_registry, scopes, sessions, tools)
+                        migrate_registry, redact, scopes, secrets, sessions, tools)
 from ccsync_lib.gitutil import Git
 from ccsync_lib.i18n import tr
 from ccsync_lib.paths import PathMapper
@@ -252,18 +252,21 @@ def _push_tools(context: Context, mapper: PathMapper) -> list[str]:
 	done.append(f"mcp({len(secret_keys)} секретов замаскировано)" if secret_keys else "mcp")
 	tools.export_plugins(config, vault.tools_dir / "plugins.json")
 	done.append("plugins")
-	for name in tools.COPIED_FILES:
-		source = config / name
-		if source.exists() and not source.is_symlink():
-			target = vault.tools_dir / name
-			target.parent.mkdir(parents=True, exist_ok=True)
-			target.write_bytes(source.read_bytes())
+	copied = tools.export_copied(config, vault.tools_dir)
+	if copied:
+		done.append(f"files({len(copied)})")
 	sent = hostfiles.export(
 		config.parent, config, vault.tools_dir / hostfiles.HOST_DIR_NAME,
 		hostfiles.load_registry(vault.tools_dir / hostfiles.REGISTRY_FILE),
 		mapper, machine)
 	if sent:
 		done.append(f"host({len(sent)})")
+	encrypted = secrets.export(
+		config.parent, vault.tools_dir / secrets.SECRETS_DIR_NAME,
+		secrets.load_registry(vault.tools_dir / secrets.REGISTRY_FILE),
+		machine)
+	if encrypted:
+		done.append(f"secrets({len(encrypted)})")
 	return done
 
 
@@ -301,11 +304,17 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 	if ignored.is_project_ignored(key):
 		context.say(tr("[ccsync] проект {key} не синхронизируется — пропускаю", key=key))
 		return []
+	# Ключи попадают в диалог сами собой — вставленные в чат, показанные в
+	# выводе команд. Вырезаем их до того, как транскрипт уедет в репозиторий.
+	redactor = redact.for_home(
+		context.config_dir.parent,
+		list(secrets.load_registry(context.vault.tools_dir / secrets.REGISTRY_FILE)))
 	report = sessions.push_session(
 		transcript,
 		context.vault.session_dir_for(key),
 		mapper,
 		max_bytes=args.max_mb * 1024 * 1024,
+		redactor=redactor,
 	)
 	for name, reason in report.skipped:
 		print(tr("[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}",
@@ -412,12 +421,13 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 							   "(без симлинка; см. `ccsync adopt`)",
 							   name=name, count=merged))
 
-	for name in tools.COPIED_FILES:
-		source = vault.tools_dir / name
-		target = config / name
-		if source.exists() and (not target.exists() or source.read_bytes() != target.read_bytes()):
-			target.write_bytes(source.read_bytes())
-			context.say(tr("[ccsync] {name}: обновлён", name=name))
+	applied, kept = tools.apply_copied(config, vault.tools_dir)
+	for name in applied:
+		context.say(tr("[ccsync] {name}: обновлён", name=name))
+	for name in kept:
+		context.say(tr(
+			"[ccsync] {name} правлен здесь — оставлен как есть. "
+			"Отдать свою версию: {command} push tools", name=name, command=_ccsync_hint()))
 
 	try:
 		if tools.apply_settings(vault.tools_dir / "settings.template.json", config, mapper,
@@ -482,6 +492,25 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 					   name=name, problem=problem))
 		context.say(tr("[ccsync]   включить вручную: systemctl --user enable --now {name}",
 					   name=name))
+
+	if not args.dry_run:
+		vaulted = secrets.apply(
+			config.parent, vault.tools_dir / secrets.SECRETS_DIR_NAME,
+			secrets.load_registry(vault.tools_dir / secrets.REGISTRY_FILE),
+			context.require_machine())
+		if vaulted.applied:
+			context.say(tr("[ccsync] секреты: {names}",
+						   names=", ".join(vaulted.applied)))
+		for key in vaulted.diverged:
+			context.say(tr(
+				"[ccsync] {key} здесь другой — оставлен как есть. "
+				"Отдать свою версию: {command} push tools",
+				key=key, command=_ccsync_hint()))
+		if vaulted.locked:
+			context.say(tr(
+				"[ccsync] секреты не расшифровать ({names}): нет ~/{identity} "
+				"или не установлен age",
+				names=", ".join(vaulted.locked), identity=secrets.IDENTITY_PATH))
 
 
 def _pull_memory(context: Context, machine: identity.Machine) -> None:
@@ -1043,6 +1072,81 @@ def _host_registry_path(context: Context) -> Path:
 	return context.vault.tools_dir / hostfiles.REGISTRY_FILE
 
 
+def _secrets_dir(context: Context) -> Path:
+	return context.vault.tools_dir / secrets.SECRETS_DIR_NAME
+
+
+def cmd_secrets(context: Context, args) -> int:
+	"""Секреты, которые ездят между машинами зашифрованными (age)."""
+	machine = context.require_machine()
+	home = context.config_dir.parent
+	registry_path = context.vault.tools_dir / secrets.REGISTRY_FILE
+	registry = secrets.load_registry(registry_path)
+	secrets_dir = _secrets_dir(context)
+
+	if not secrets.age_available():
+		print(tr("age не установлен — шифровать и расшифровывать нечем"),
+			  file=sys.stderr)
+		return 1
+
+	if getattr(args, "add_recipient", False):
+		public = secrets.public_key_of(home)
+		if not public:
+			print(tr("нет ~/{path} — сначала: age-keygen -o ~/{path}",
+					 path=secrets.IDENTITY_PATH), file=sys.stderr)
+			return 1
+		if secrets.add_recipient(secrets_dir, public, machine.machine_id):
+			print(tr("{machine}: ключ добавлен в получатели",
+					 machine=machine.machine_id))
+			print(tr("Перешифровать файлы: {command} push tools",
+					 command=_ccsync_hint()))
+		else:
+			print(tr("{machine}: ключ уже в получателях",
+					 machine=machine.machine_id))
+		return 0
+
+	if args.add:
+		path = Path(args.add).expanduser().resolve()
+		if not path.exists():
+			print(tr("нет файла {path}", path=path), file=sys.stderr)
+			return 1
+		try:
+			key = str(path.relative_to(home))
+		except ValueError:
+			print(tr("{path} вне домашнего каталога", path=path), file=sys.stderr)
+			return 1
+		if not secrets.load_recipients(secrets_dir):
+			print(tr("нет ни одного получателя — сначала: "
+					 "{command} secrets add-recipient", command=_ccsync_hint()),
+				  file=sys.stderr)
+			return 1
+		scope = [scopes.SCOPE_GLOBAL] if args.globally else [f"{scopes.OS_PREFIX}{machine.os}"]
+		registry[key] = scope
+		secrets.save_registry(registry_path, registry)
+		print(f"{key}: {tr('под синхронизацией')} ({scopes.format(scope)})")
+		print(tr("Зашифровать и отдать: {command} push tools",
+				 command=_ccsync_hint()))
+		return 0
+
+	if not registry:
+		print(tr("Секреты не синхронизируются. Добавить: "
+				 "{command} secrets add ~/.claude/имя", command=_ccsync_hint()))
+		return 0
+
+	print(tr("Получатели (машины, которые смогут расшифровать):"))
+	for line in secrets.load_recipients(secrets_dir) or [tr("  — ни одного")]:
+		print(f"  {line}")
+	print()
+	for key, scope in sorted(registry.items()):
+		here = scopes.matches(scopes.parse(scope), machine)
+		local = (home / key).exists()
+		mark = "✓" if here and local else ("·" if here else " ")
+		print(f"  {mark} {key:38} {scopes.describe(scopes.parse(scope), machine)}")
+	print()
+	print(tr("✓ — есть здесь; · — применим здесь, но файла нет"))
+	return 0
+
+
 def cmd_host(context: Context, args) -> int:
 	"""Скрипты и юниты claude-обвязки: что возится и куда применимо."""
 	machine = context.require_machine()
@@ -1487,6 +1591,29 @@ def build_parser() -> argparse.ArgumentParser:
 	host_scope.add_argument("--global", dest="globally", action="store_true",
 							help=tr("вернуть в общие"))
 	host_scope.set_defaults(func=cmd_host, add=None)
+
+	secrets_cmd = subparsers.add_parser(
+		"secrets", help=tr("секреты, которые ездят зашифрованными (age)"),
+		description=tr("Файлы с ключами возятся между машинами в шифрованном виде. "
+					   "Расшифровать их может только машина, чей публичный ключ "
+					   "добавлен в получатели; приватный ключ (~/.claude/ccsync-age.key) "
+					   "в git не попадает и переносится вручную."))
+	secrets_sub = secrets_cmd.add_subparsers(dest="secrets_command")
+	secrets_cmd.set_defaults(func=cmd_secrets, add=None, globally=False,
+							 add_recipient=False)
+
+	secrets_add = secrets_sub.add_parser(
+		"add", help=tr("взять файл с секретом под синхронизацию"))
+	secrets_add.add_argument("add", metavar="path", help=tr("путь к файлу"))
+	secrets_add.add_argument("--global", dest="globally", action="store_true",
+							 help=tr("применим на любой ОС (по умолчанию — только текущая)"))
+	secrets_add.set_defaults(func=cmd_secrets, add_recipient=False)
+
+	secrets_recipient = secrets_sub.add_parser(
+		"add-recipient",
+		help=tr("разрешить этой машине расшифровывать секреты"))
+	secrets_recipient.set_defaults(func=cmd_secrets, add=None, globally=False,
+								   add_recipient=True)
 	return parser
 
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .paths import PathMapper, slug_for
+from .redact import Redactor
 
 # GitHub отклоняет файлы больше 100 МБ. Держим запас и не тащим гиганты.
 DEFAULT_MAX_BYTES = 50 * 1024 * 1024
@@ -96,13 +97,22 @@ def transform_transcript(
 	*,
 	mode: str,
 	cwd_override: str | None = None,
+	redactor: Redactor | None = None,
 ) -> int:
 	"""Переписать транскрипт построчно.
 
 	mode="tokenize"   — локальные пути → токены (выгрузка в репо)
 	mode="detokenize" — токены → локальные пути (загрузка на машину)
+
+	`redactor` вырезает секреты и имеет смысл только при выгрузке: обратно
+	секрет не восстанавливается, и это намеренно.
 	"""
 	convert = mapper.tokenize if mode == "tokenize" else mapper.detokenize
+	if redactor is not None and mode == "tokenize":
+		path_convert = convert
+
+		def convert(value: str) -> str:  # noqa: F811 — сознательная обёртка
+			return redactor.mask(path_convert(value))
 	destination.parent.mkdir(parents=True, exist_ok=True)
 	written = 0
 	with source.open(encoding="utf-8", errors="replace") as src, \
@@ -553,6 +563,7 @@ def push_session(
 	mapper: PathMapper,
 	*,
 	max_bytes: int = DEFAULT_MAX_BYTES,
+	redactor: Redactor | None = None,
 ) -> TransferReport:
 	"""Выгрузить один транскрипт в репозиторий."""
 	if not transcript.exists():
@@ -564,7 +575,8 @@ def push_session(
 	if is_empty_transcript(transcript):
 		return TransferReport([], [(transcript.name, "пустая сессия, отправлять нечего")])
 	destination = vault_session_dir / transcript.name
-	transform_transcript(transcript, destination, mapper, mode="tokenize", cwd_override=None)
+	transform_transcript(transcript, destination, mapper, mode="tokenize",
+						 cwd_override=None, redactor=redactor)
 	return TransferReport([transcript.name], [])
 
 

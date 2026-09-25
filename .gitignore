@@ -2,6 +2,10 @@
 ccsync-machine.json
 ccsync-secrets.env
 ccsync-ignore.json
+# Приватный ключ age: им расшифровываются tools/secrets/*.age.
+# В репозитории ему не место никогда — переносится между машинами вручную.
+ccsync-age.key
+*.age.key
 *.local
 __pycache__/
 *.pyc

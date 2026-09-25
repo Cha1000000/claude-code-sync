@@ -32,6 +32,7 @@
   "[ccsync] push не прошёл: {error}": "[ccsync] push failed: {error}",
   "[ccsync] push пропущен (дебаунс {seconds} с)": "[ccsync] push skipped (debounced, {seconds}s)",
   "[ccsync] settings.json обновлён (прежний — в settings.json.bak)": "[ccsync] settings.json updated (the previous one is in settings.json.bak)",
+  "[ccsync] {name} правлен здесь — оставлен как есть. Отдать свою версию: {command} push tools": "[ccsync] {name} was edited here — kept as is. To send your version: {command} push tools",
   "[ccsync] {name}: обновлено файлов {count} (без симлинка; см. `ccsync adopt`)": "[ccsync] {name}: {count} files updated (no symlink; see `ccsync adopt`)",
   "[ccsync] {name}: обновлён": "[ccsync] {name}: updated",
   "[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}": "[ccsync] WARNING: {name} was not sent — {reason}",

@@ -35,10 +35,116 @@ SECRET_TEMPLATE = "{{ENV:%s}}"
 MCP_SCOPES_FILE = "mcp-scopes.json"
 
 # Что синхронизируем «как есть», через симлинк.
-LINKED_DIRS = ("skills", "commands", "hooks", "plans")
+LINKED_DIRS = ("skills", "commands", "hooks", "plans", "agents")
 
-# Одиночные файлы, которые просто копируются в обе стороны.
+# Одиночные файлы ~/.claude, которые просто копируются в обе стороны.
+# Копируются как есть, без токенизации путей, — значит внутри не должно быть
+# абсолютных путей машины и секретов.
 COPIED_FILES = ("CLAUDE.md", "statusline.py")
+
+# Свои дополнительные файлы того же рода — списком имён в tools/ хранилища:
+# ["my-statusline.py", "extra-settings.json"]. Это данные, а не код движка.
+EXTRA_COPIED_FILE = "copied-files.json"
+
+
+def copied_files(tools_dir: Path) -> tuple[str, ...]:
+	"""Всё, что копируется: встроенные файлы плюс свои из copied-files.json.
+
+	Принимаем только простые имена файлов ~/.claude — без каталогов и «..»,
+	чтобы запись в списке не могла указать за пределы каталога конфигурации.
+	"""
+	names = list(COPIED_FILES)
+	try:
+		extra = json.loads((tools_dir / EXTRA_COPIED_FILE).read_text(encoding="utf-8"))
+	except (OSError, ValueError):
+		extra = []
+	if isinstance(extra, list):
+		for name in extra:
+			if (isinstance(name, str) and name and name == Path(name).name
+					and name not in (".", "..") and name not in names):
+				names.append(name)
+	return tuple(names)
+
+# Снимки того, что в последний раз синхронизировалось, — чтобы отличить правку
+# на этой машине от устаревшей копии (по образцу hostfiles).
+COPIED_BASE_DIR = "ccsync-copied-base"
+
+
+def _copied_base(config_dir: Path, name: str) -> Path:
+	return config_dir / COPIED_BASE_DIR / name
+
+
+def _read_bytes(path: Path) -> bytes | None:
+	try:
+		return path.read_bytes()
+	except OSError:
+		return None
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+	path.parent.mkdir(parents=True, exist_ok=True)
+	path.write_bytes(data)
+
+
+def export_copied(config_dir: Path, tools_dir: Path) -> list[str]:
+	"""Выгрузить копируемые файлы, правленные на этой машине.
+
+	Файл, не менявшийся здесь со времени последней синхронизации, не
+	выгружается: если в хранилище лежит другое, это свежая правка с другой
+	машины, которую эта ещё не подтянула, — выгрузка затёрла бы её.
+	"""
+	sent: list[str] = []
+	for name in copied_files(tools_dir):
+		source = config_dir / name
+		if not source.exists() or source.is_symlink():
+			continue
+		local = source.read_bytes()
+		target = tools_dir / name
+		stored = _read_bytes(target)
+		base_path = _copied_base(config_dir, name)
+		base = _read_bytes(base_path)
+		if stored == local:
+			if base != local:
+				_write_bytes(base_path, local)
+			continue
+		if stored is not None and base is not None and local == base:
+			continue
+		_write_bytes(target, local)
+		_write_bytes(base_path, local)
+		sent.append(name)
+	return sent
+
+
+def apply_copied(config_dir: Path, tools_dir: Path) -> tuple[list[str], list[str]]:
+	"""Разложить копируемые файлы из хранилища. Возвращает (обновлённые, оставленные).
+
+	Файл, правленный здесь (разошёлся со снимком), не трогаем — он уедет со
+	следующим push. Снимка нет (первая синхронизация после обновления движка) —
+	берём версию из хранилища, прежнюю кладём рядом в .bak.
+	"""
+	applied: list[str] = []
+	kept: list[str] = []
+	for name in copied_files(tools_dir):
+		stored = _read_bytes(tools_dir / name)
+		if stored is None:
+			continue
+		target = config_dir / name
+		current = _read_bytes(target)
+		base_path = _copied_base(config_dir, name)
+		base = _read_bytes(base_path)
+		if current == stored:
+			if base != stored:
+				_write_bytes(base_path, stored)
+			continue
+		if current is not None and base is not None and current != base:
+			kept.append(name)
+			continue
+		if current is not None and base is None:
+			shutil.copy2(target, target.with_name(target.name + ".bak"))
+		_write_bytes(target, stored)
+		_write_bytes(base_path, stored)
+		applied.append(name)
+	return applied, kept
 
 
 @dataclass
