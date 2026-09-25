@@ -244,7 +244,6 @@
   "секреты, которые ездят зашифрованными (age)": "secrets that travel encrypted (age)",
   "сессии, в которых разошлись ветки": "branches of a session that diverged",
   "скрипты и systemd-юниты claude-обвязки": "scripts and systemd units that serve Claude",
-  "снять пометку": "remove the mark",
   "снять пометку (id сессии или ключ проекта)": "remove the mark (session id or project key)",
   "список машин": "list the machines",
   "только ошибки": "errors only",
