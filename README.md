@@ -46,10 +46,13 @@ required.
 | **Plugins** | The list, so a new machine tells you what to install |
 | **Settings** | `settings.json`, merged rather than overwritten |
 | **Host files** | Scripts from `~/.local/bin` and systemd units — only the ones you list |
+| **Single files** | `CLAUDE.md`, `statusline.py` and any of your own you list in `tools/copied-files.json` |
+| **Secrets** | Files with API keys you register — encrypted with [age](https://age-encryption.org), only your machines can decrypt them |
 
 Never synced, deliberately: `.credentials.json` (OAuth tokens — on macOS they
-live in Keychain anyway), the machine passport, your secrets file, plugin caches,
-shell snapshots and other machine-local state.
+live in Keychain anyway), the machine passport, your age private key, plugin
+caches, shell snapshots and other machine-local state. Secrets travel only in
+encrypted form — never as plain text.
 
 ## How it works
 
@@ -85,11 +88,15 @@ by Claude Code itself at runtime, so a symlink there is dangerous — they are
 rendered from templates on every `pull`, and `settings.json` is merged three-way
 with your local file winning any conflict. Your model, theme and plugins survive.
 
-**Secrets never enter the repository.** A value under a key that looks like a
-token becomes `{{ENV:NAME}}` in the template, and is filled back in from
-`~/.claude/ccsync-secrets.env`, which is local and git-ignored. If a secret is
-missing on a machine, the server is installed without it and you are told which
-variables to add.
+**Secrets never enter the repository as plain text.** A value under a key that
+looks like a token becomes `{{ENV:NAME}}` in the MCP template, and is filled back
+in from `~/.claude/ccsync-secrets.env`, which is local and git-ignored. If a secret
+is missing on a machine, the server is installed without it and you are told which
+variables to add. Files you explicitly register as secrets — that `.env` file
+itself, a key file — travel **encrypted** with age, so every machine gets them
+without you copying keys by hand (see [Secrets](#secrets-encrypted-with-age)).
+And keys that slip into a conversation are masked in the transcript before it
+is pushed (see [Privacy](#privacy)).
 
 **A project that is not bound here still works.** Its sessions are laid out under
 `~/claude-sessions/<key>` — they open and read fine, there are simply no project
@@ -129,11 +136,12 @@ else, and the engine talks to no service but your git remote.
 
 | Synced | Never synced |
 |---|---|
-| Session transcripts, with paths tokenized | `.credentials.json` and OAuth tokens (on macOS they are in Keychain anyway) |
+| Session transcripts, with paths tokenized and known keys masked | `.credentials.json` and OAuth tokens (on macOS they are in Keychain anyway) |
 | Memory facts, each scoped | `ccsync-machine.json` — this machine's identity |
-| Skills, commands, hooks, plans | `ccsync-secrets.env` — your tokens, git-ignored |
-| MCP definitions, secrets replaced by `{{ENV:NAME}}` | Plugin caches, shell snapshots, `history.jsonl` |
-| The plugin list and merged `settings.json` | Anything you mark with `/sync-ignore` |
+| Skills, commands, hooks, plans | `ccsync-age.key` — the private key that decrypts your secrets |
+| MCP definitions, secrets replaced by `{{ENV:NAME}}` | Plain-text secrets: `ccsync-secrets.env` itself is git-ignored |
+| The plugin list and merged `settings.json` | Plugin caches, shell snapshots, `history.jsonl` |
+| Registered secret files — **age-encrypted only** | Anything you mark with `/sync-ignore` |
 
 Two things worth knowing before you trust it with real work. A transcript that
 has already been pushed is removed by `/sync-forget`, but that is an ordinary
@@ -146,6 +154,8 @@ to be set early to be of any use.
 - Claude Code, on close versions across your machines — the transcript format
   changes between releases
 - git and Python 3 (3.9+); no third-party packages, the engine is stdlib only
+- [age](https://age-encryption.org) — only if you want secrets to travel
+  (`pacman -S age`, `apt install age`, `brew install age`)
 - a **private** git repository of your own (GitHub, GitLab, your own server)
 
 ## Getting started (first machine)
@@ -224,6 +234,7 @@ Hooks do the work: `SessionStart` pulls and tells Claude which machine it is on,
 | `/sync-bind <key> [path]` | bind a project to its path here |
 | `/sync-mcp [name] [--here\|--not-here\|--global]` | MCP servers and their scopes |
 | `/sync-host [add <path>] [<key>] [--here\|--not-here\|--global]` | host scripts and systemd units |
+| `/sync-secrets [add <path> \| add-recipient]` | secrets that travel encrypted, and who can decrypt them |
 | `/sync-ignore [reason]` | keep this session out of the vault |
 | `/sync-forget [id]` | forget a session everywhere (irreversible) |
 
@@ -243,6 +254,14 @@ session, so marking them one by one is pointless. Undo it by the project key:
 **Empty sessions never leave at all.** The stubs created by the claude.ai bridge,
 and sessions where only a slash command was pressed, are filtered out on push:
 there is nothing in them, yet they still take up room in the history.
+
+**Keys that slip into a conversation** — pasted into the chat, shown in the
+output of `cat` — are masked in the transcript before it is pushed. Exact matches
+against the secrets this machine knows (`ccsync-secrets.env`, registered secret
+files, the age key) come first; common key shapes (`sk-…`, `ghp_…`, `ya29.…`,
+JWTs and others) catch the rest. They become `{{SECRET:label}}`. The masking is
+one-way: `pull` does not restore them, a transcript is history, not a working
+config. Your local transcript is left as it was.
 
 **Something that already left** is `/sync-forget`. It deletes the copy in the
 vault, leaves a tombstone so the other machines drop theirs on the next pull, and
@@ -269,6 +288,62 @@ Windows through Task Scheduler.
 
 A file you edited in place is not overwritten — the vault keeps a snapshot of what
 last arrived, and anything that diverged from it is left alone.
+
+## Single files in `~/.claude`
+
+`CLAUDE.md` and `statusline.py` are copied both ways as they are. To carry more
+files of the same kind — another status line script, an extra settings file for a
+wrapper — list their names in `tools/copied-files.json` in your vault:
+
+```json
+["my-statusline.py", "wrapper-settings.json"]
+```
+
+Only plain file names directly in `~/.claude` are accepted. These files are copied
+byte for byte, without path rewriting — so no absolute paths and no secrets inside.
+
+An edit made here is protected in both directions: `pull` does not overwrite a file
+that diverged from the last synced snapshot (it tells you, and the file goes out
+with your next push), and `push` does not send an untouched copy over a newer
+version another machine has already pushed.
+
+## Secrets: encrypted with age
+
+API keys are needed on every machine, and carrying them by hand is tedious. The
+vault can carry them for you — **only encrypted**, with
+[age](https://age-encryption.org):
+
+```bash
+/sync-secrets add ~/.claude/ccsync-secrets.env   # take a file under sync
+/sync-secrets                                     # what travels, and who can decrypt it
+```
+
+Each registered file is stored as `tools/secrets/<path>.age`, encrypted for every
+public key in `tools/secrets/recipients.txt`, and decrypted to its place on
+`pull`. Encryption and decryption run inside `push tools` and `pull tools` — there
+is nothing else to call.
+
+**The private key `~/.claude/ccsync-age.key` never enters git.** On a new machine,
+generate its own key and add it as a recipient, then re-encrypt from a machine
+that can already decrypt:
+
+```bash
+# on the new machine
+age-keygen -o ~/.claude/ccsync-age.key && chmod 600 ~/.claude/ccsync-age.key
+/sync-secrets add-recipient
+/sync-push tools                 # sends its public key to the vault
+
+# on a machine that already decrypts
+/sync-pull tools
+/sync-push tools                 # re-encrypts for every recipient, the new one included
+
+# back on the new machine
+/sync-pull tools                 # the secrets land in place
+```
+
+Without a key, `pull` says the secrets cannot be decrypted and touches nothing. A
+decrypted file that differs from what arrived is not overwritten either — the
+secret may have been updated right here, so you are told instead.
 
 ## Extras
 

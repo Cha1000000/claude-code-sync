@@ -92,6 +92,7 @@ whatever the scope. A file edited in place is never overwritten silently.
 - `/sync-mcp [name] [--here|--not-here|--global]` — MCP servers and their scope
 - `/sync-host [add <path>] [<key>] [--here|--not-here|--global]` — host scripts
   and systemd units
+- `/sync-secrets [add <path> | add-recipient]` — secrets that travel encrypted
 - `/sync-ignore [reason]` — keep this session out of the vault
 - `/sync-forget [id]` — forget a session everywhere, here and on every machine
 
@@ -119,10 +120,32 @@ session, so marking them one by one is pointless. Undo it with
 sessions holding a single slash command are filtered out on `push`. There is no
 need to `forget` them afterwards.
 
+## Secrets — encrypted only (age)
+
+API keys are needed on every machine, so they travel through the vault, but
+**never as plain text**. A registered file is encrypted with `age` and stored as
+`tools/secrets/<path>.age`; the list is `tools/secret-files.json`. Only a machine
+whose public key is in `tools/secrets/recipients.txt` can decrypt.
+
+    /sync-secrets                      # what travels and who can decrypt
+    /sync-secrets add ~/.claude/name   # take a key file under sync
+    /sync-secrets add-recipient        # let this machine decrypt
+
+Encryption and decryption happen inside `push tools` and `pull tools`. **The
+private key `~/.claude/ccsync-age.key` never enters git.** A decrypted file that
+differs from what arrived is not overwritten — `pull` reports it instead.
+
+**Transcripts are cleaned on push.** Keys end up in the conversation on their
+own — pasted into the chat, shown in `cat` output. Before the transcript leaves,
+they become `{{SECRET:label}}`, matched exactly against the secrets this machine
+knows and by shape (`sk-…`, `ghp_…`, JWTs and others). The local transcript is
+not changed.
+
 ## What not to do
 
-- Never write secrets into vault files. Tokens go in
-  `~/.claude/ccsync-secrets.env` only (local, git-ignored).
+- Never write secrets into vault files **as plain text** — only through the
+  encrypted mechanism above. Local tokens that go nowhere live in
+  `~/.claude/ccsync-secrets.env`.
 - Never edit `MEMORY.md` or `memory/index.md` — both are generated.
 - Never put absolute machine paths into vault files by hand: paths are
   tokenized automatically (`{{HOME}}`, `{{P:key}}`).

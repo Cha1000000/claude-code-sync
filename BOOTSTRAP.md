@@ -65,9 +65,18 @@ me the result of each one.
    `python3 ~/claude-code-sync/bin/ccsync.py machines`. In the machine note,
    describe briefly what this machine is.
 
-6. Nothing needs doing about tokens up front. If step 8 reports a missing
-   secret, name it to me and I will put the value into
-   ~/.claude/ccsync-secrets.env myself.
+6. Tokens. If the vault carries encrypted secrets (the list is
+   `python3 ~/claude-code-sync/bin/ccsync.py secrets`), this machine needs its
+   own age key to decrypt them:
+       age-keygen -o ~/.claude/ccsync-age.key && chmod 600 ~/.claude/ccsync-age.key
+       python3 ~/claude-code-sync/bin/ccsync.py secrets add-recipient
+       python3 ~/claude-code-sync/bin/ccsync.py push tools
+   Then tell me to run `/sync-pull tools` and `/sync-push tools` on a machine
+   that already decrypts — that re-encrypts the files for this one too. Until
+   then `pull` reports the secrets as locked, which is expected. If age is not
+   installed, install it first. If the vault carries no secrets, nothing is
+   needed here: if step 8 reports a missing one, name it to me and I will put
+   the value into ~/.claude/ccsync-secrets.env myself.
 
 7. Take the state:
        python3 ~/claude-code-sync/bin/ccsync.py pull all
@@ -94,8 +103,10 @@ me the result of each one.
 10. Restart Claude Code so the hooks are picked up, and check that a new session
    starts with a [ccsync] Machine: ... block.
 
-Note: ~/.claude/ccsync-machine.json and ~/.claude/ccsync-secrets.env are never
+Note: ~/.claude/ccsync-machine.json and ~/.claude/ccsync-age.key are never
 synced — each machine has its own. Do not copy them from another machine.
+~/.claude/ccsync-secrets.env travels only if it was registered as a secret, and
+then only encrypted.
 ```
 
 ---
@@ -105,9 +116,9 @@ synced — each machine has its own. Do not copy them from another machine.
 | Step | Result |
 |---|---|
 | `init` | Creates `~/.claude/ccsync-machine.json` and registers the machine in `machines/<machine>.json` |
-| `pull all` | Symlinks for skills/commands/hooks/plans, `CLAUDE.md` and `statusline.py` if the vault carries them, `settings.json` merged for local paths, MCP servers, host scripts and systemd units, a local `MEMORY.md` by scope, session transcripts |
+| `pull all` | Symlinks for skills/commands/hooks/plans, `CLAUDE.md` and `statusline.py` if the vault carries them, `settings.json` merged for local paths, MCP servers, host scripts and systemd units, encrypted secrets decrypted (if this machine has a key), a local `MEMORY.md` by scope, session transcripts |
 | Hooks | `SessionStart` pulls and prints where you are, `Stop` and `SessionEnd` push |
-| Check | `tools/tests/run-all.sh` — five rigs; worth running once on a fresh machine to confirm the engine works there |
+| Check | `tools/tests/run-all.sh` — the test rigs; worth running once on a fresh machine to confirm the engine works there |
 
 ### One thing to know before the first pull
 
