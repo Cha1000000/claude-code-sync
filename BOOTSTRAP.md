@@ -54,7 +54,14 @@ me the result of each one.
    Also check `git config --get user.email` and `--get user.name`: without them
    `ccsync push` cannot commit.
 
-4. Clone my vault to this exact path — the slash commands reference it:
+4. If Claude Code was already used on this machine (there is a ~/.claude with
+   skills, memory, sessions), FIRST make an archive, before any ccsync step:
+       tar czf ~/claude-backup-$(date +%Y%m%d).tar.gz -C ~ .claude $(cd ~ && ls .claude.json 2>/dev/null)
+   (on native Windows use `tar` from PowerShell with the date typed in, or just
+   copy the folders). Show me the archive's path and size. On a clean machine,
+   skip this paragraph.
+
+   Clone my vault to this exact path — the slash commands reference it:
        git clone <my repository url> ~/claude-code-sync
 
 5. Create this machine's passport:
@@ -83,6 +90,36 @@ me the result of each one.
    For projects that are not bound here the script asks for a path. If a project
    does not exist on this machine, skip it — its sessions go to
    ~/claude-sessions/<key> and will still open.
+
+7a. ONLY if Claude Code was used on this machine before. The sync hooks start
+   working only after the restart in step 10, so until then nothing leaves this
+   machine by itself — this is the window to sort out its previous state. Go
+   through it together with me, do not decide for me:
+
+   a) MCP servers: `python3 ~/claude-code-sync/bin/ccsync.py mcp`. Servers marked
+      "only here, not in the vault yet" go to EVERY machine on the first push.
+      Show them to me; the ones tied to this machine (its paths, its programs)
+      get marked before the push: `ccsync.py mcp scope <name> --here`.
+   b) Skills and commands: compare `ls ~/.claude/skills ~/.claude/commands` with
+      `~/claude-code-sync/tools/skills` and `tools/commands`. Show me what exists
+      only here: it goes to every machine on push. Remove what is not wanted
+      before pushing.
+   c) Memory. `pull` kept the previous index as MEMORY.md.bak (next to the new
+      MEMORY.md, in ~/.claude/projects/<home directory slug>/memory/); the old
+      note files are there too. Other projects have memory as well —
+      `ls ~/.claude/projects/*/memory`. Go through it with me, one note at a time:
+        - about me, my work, my projects: the vault's version is newer — move
+          over only what it lacks (extend an existing fact or add a global one);
+        - about this machine (its paths, software, settings): a new fact scoped
+          to this machine, or to `os:darwin` / `os:win32`;
+        - outdated — leave it out; it stays in the archive from step 4.
+      New facts follow the rules in the ccsync block of ~/.claude/CLAUDE.md.
+      `ccsync adopt` is NOT the tool for memory here: on any machine but the
+      vault's first it only moves notes that already have a scope and lists the
+      rest — those get scoped by hand.
+   d) Then: `python3 ~/claude-code-sync/bin/ccsync.py adopt` (skills/commands/…
+      become symlinks into the vault; the previous copies go to
+      ~/.claude/backups/) and `ccsync.py push all`.
 
 8. Tell me which secrets are missing, if any, and which plugins need installing —
    the script prints a ready `claude plugin install ...` command.
@@ -120,18 +157,30 @@ then only encrypted.
 | Hooks | `SessionStart` pulls and prints where you are, `Stop` and `SessionEnd` push |
 | Check | `tools/tests/run-all.sh` — the test rigs; worth running once on a fresh machine to confirm the engine works there |
 
-### One thing to know before the first pull
+## A machine that already had Claude Code
 
-On a machine that already has a `~/.claude/settings.json`, the first `pull`
-**replaces** it with the shared one rather than merging: the three-way merge that
-protects your local keys needs a baseline to compare against, and that baseline
-only exists from the second pull onwards. The previous file is kept next to it as
-`settings.json.bak`, and nothing else is touched.
+Connecting such a machine does not harm the shared vault: `pull` takes the
+vault's skills, `CLAUDE.md` and settings, and the first `push` afterwards sends
+only what was changed on this machine after that `pull` (the
+`tools/tests/first-join.sh` rig checks exactly this). What changes is the machine
+itself, and its previous state is kept next to it:
 
-So if this machine has settings worth keeping (a different model, a theme, an
-extra hook), open `settings.json.bak` afterwards, move what you want back into
-`settings.json`, and run `ccsync.py push tools` — from then on your machines
-share one set of settings and local edits survive every pull.
+| What the machine had | What it gets |
+|---|---|
+| `CLAUDE.md`, `settings.json` | the shared ones; previous copies — `CLAUDE.md.bak`, `settings.json.bak` |
+| `MEMORY.md` | rendered from the shared facts; previous one — `MEMORY.md.bak` |
+| Memory notes | stay on disk; into shared memory only by hand, with a scope (step 7a) |
+| Skills and commands with the same name | the newer one by modification time — usually the vault's |
+| Skills, commands, MCP servers the vault lacks | go to every machine on the first `push` — hence step 7a |
+| Old sessions | stay on the machine; only the current one is pushed |
+
+**Settings.** The first `pull` **replaces** an existing `settings.json` rather
+than merging it: the three-way merge that protects your local keys needs a
+baseline to compare against, and that baseline only exists from the second pull
+onwards. So if this machine has settings worth keeping (a different model, a
+theme, an extra hook), open `settings.json.bak` afterwards, move what you want
+back into `settings.json`, and run `ccsync.py push tools` — from then on your
+machines share one set of settings and local edits survive every pull.
 
 ## Per-OS notes
 

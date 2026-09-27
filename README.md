@@ -211,7 +211,9 @@ to be set early to be of any use.
    line.
 
 **Adding your second and further machines:** [BOOTSTRAP.md](BOOTSTRAP.md) — it is
-a prompt you paste into Claude Code on the new machine. That is what it looks
+a prompt you paste into Claude Code on the new machine. If Claude Code was
+already used there, read [A machine that already had Claude Code](BOOTSTRAP.md#a-machine-that-already-had-claude-code)
+first — its own memory, skills and MCP servers get sorted out before anything leaves it. That is what it looks
 like there: one command, and the machine has your skills, your memory and
 yesterday's session.
 
