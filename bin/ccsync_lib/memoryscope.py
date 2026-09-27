@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+import time
 from pathlib import Path
 
 from . import scopes
@@ -115,6 +116,58 @@ def parse_fact(path: Path) -> Fact:
 	)
 
 
+def has_explicit_scope(path: Path) -> bool:
+	"""Указан ли у заметки scope явно.
+
+	`parse_fact` подставляет `global` по умолчанию — для фактов хранилища это
+	верно. Но заметка с другой машины без scope не «общая», а «неразмеченная»:
+	сделать её общей молча значит разнести её пути и софт на все машины.
+	"""
+	try:
+		text = path.read_text(encoding="utf-8", errors="replace")
+	except OSError:
+		return False
+	meta, _ = parse_frontmatter(text)
+	metadata = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
+	return bool(scopes.parse(metadata.get("scope")))
+
+
+# Непереводимая метка сгенерированного индекса: по ней pull узнаёт свой файл.
+# Заголовок для этого не годится — он идёт через tr() и зависит от перевода.
+GENERATED_MARKER = "<!-- ccsync: generated -->"
+
+# Так начинались индексы, записанные до появления метки, — узнаём и их, иначе
+# первый pull после обновления сделал бы на каждой машине лишнюю копию.
+INDEX_HEADER_PREFIX = "# Memory index — "
+
+
+def keep_foreign_index(path: Path) -> Path | None:
+	"""Сохранить рядом MEMORY.md, который писал не ccsync. Вернуть путь копии.
+
+	На машине, где Claude Code жил до ccsync, в MEMORY.md лежит его собственная
+	память — оглавление, а то и сами заметки. Сгенерированный индекс беречь
+	незачем, чужой — обязательно: иначе он пропадёт при первом же pull.
+
+	Ошибки чтения и записи не глотает: если прочитать прежний файл или сохранить
+	копию не вышло, вызывающий обязан НЕ перезаписывать MEMORY.md.
+	"""
+	if not path.exists():
+		return None
+	data = path.read_bytes()
+	text = data.decode("utf-8", errors="replace")
+	if not text.strip() or GENERATED_MARKER in text \
+			or text.lstrip("\ufeff").startswith(INDEX_HEADER_PREFIX):
+		return None
+	backup = path.with_name(path.name + ".bak")
+	stamp = time.strftime("%Y%m%d-%H%M%S")
+	counter = 0
+	while backup.exists():
+		counter += 1
+		backup = path.with_name(f"{path.name}.bak-{stamp}" + (f"-{counter}" if counter > 1 else ""))
+	backup.write_bytes(data)
+	return backup
+
+
 def load_facts(facts_dir: Path) -> list[Fact]:
 	if not facts_dir.is_dir():
 		return []
@@ -163,7 +216,7 @@ def render_local_index(facts: list[Fact], machine: Machine, link_prefix: str = "
 			   path=link_prefix or "./"),
 			"",
 		]
-	return "\n".join(lines).rstrip() + "\n"
+	return "\n".join(lines).rstrip() + "\n\n" + GENERATED_MARKER + "\n"
 
 
 def _index_line(fact: Fact, link_prefix: str) -> str:

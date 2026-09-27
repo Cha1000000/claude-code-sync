@@ -171,6 +171,20 @@ def _decrypt(home: Path, cipher: Path) -> bytes | None:
 	return result.stdout if result.returncode == 0 else None
 
 
+def _is_placeholder(data: bytes) -> bool:
+	"""Пустой или из одних комментариев: беречь в таком файле нечего.
+
+	Так выглядит шаблон, который `ccsync init` кладёт на новую машину. Считать
+	его «правкой здесь» нельзя, иначе он навсегда заслонит настоящий файл.
+	"""
+	try:
+		text = data.decode("utf-8-sig")
+	except UnicodeDecodeError:
+		return False
+	return all(not line.strip() or line.lstrip().startswith("#")
+			   for line in text.splitlines())
+
+
 def _encrypt(data: bytes, recipients: list[str], target: Path) -> bool:
 	target.parent.mkdir(parents=True, exist_ok=True)
 	command = ["age", "--encrypt"]
@@ -181,8 +195,13 @@ def _encrypt(data: bytes, recipients: list[str], target: Path) -> bool:
 
 
 def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
-		   machine: Machine, *, dry_run: bool = False) -> list[str]:
-	"""Зашифровать в хранилище секреты, правленные здесь. Возвращает имена отданных.
+		   machine: Machine, *, dry_run: bool = False) -> tuple[list[str], list[str]]:
+	"""Зашифровать в хранилище секреты, правленные здесь.
+
+	Возвращает (отданные, придержанные). Придержан секрет, чья версия уже лежит
+	в хранилище, но здесь её не расшифровать и отпечатка нет: доказать, что
+	локальный файл — правка, а не пустой шаблон новой машины, нечем, а отдать
+	его значило бы затереть настоящий ключ на всех машинах.
 
 	Секрет, не менявшийся здесь со времени последней синхронизации, заново не
 	шифруется: правда о нём — в хранилище, и её могла обновить другая машина,
@@ -190,14 +209,15 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 	тогда перешифровывается содержимое хранилища, а не устаревшая локальная копия.
 	"""
 	if not registry or not age_available():
-		return []
+		return [], []
 	recipients = load_recipients(secrets_dir)
 	if not recipients:
-		return []
+		return [], []
 
 	base = _load_base(home)
 	recipients_now = _recipients_digest(recipients)
 	sent: list[str] = []
+	held: list[str] = []
 	for key, scope in registry.items():
 		if not scopes.matches(scopes.parse(scope), machine):
 			continue
@@ -209,11 +229,19 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		target = _cipher_path(secrets_dir, key)
 		known = base.get(key) or {}
 
+		if target.exists() and _is_placeholder(local):
+			# Шаблон новой машины — не правка. Настоящий ключ приедет с pull.
+			held.append(key)
+			continue
+
 		if target.exists() and not known:
 			# Первая синхронизация после обновления движка: если в хранилище то же
 			# самое, просто запоминаем отпечаток — перешифровывать незачем.
 			stored = _decrypt(home, target)
-			if stored is not None and stored == local:
+			if stored is None:
+				held.append(key)
+				continue
+			if stored == local:
 				known = base[key] = {"plain": local_digest}
 
 		if target.exists() and known.get("plain") == local_digest:
@@ -221,6 +249,7 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 				continue
 			stored = _decrypt(home, target)
 			if stored is None or not _encrypt(stored, recipients, target):
+				held.append(key)
 				continue
 			known["recipients"] = recipients_now
 			base[key] = known
@@ -233,7 +262,7 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 	# База — на машине, не в хранилище: в dry-run её не трогаем.
 	if not dry_run:
 		_save_base(home, base)
-	return sent
+	return sent, held
 
 
 def apply(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
@@ -275,7 +304,7 @@ def apply(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 				if known.get("plain") != _digest(plain):
 					base[key] = {**known, "plain": _digest(plain)}
 				continue
-			if known.get("plain") != _digest(current):
+			if known.get("plain") != _digest(current) and not _is_placeholder(current):
 				# Локальная версия другая и её правили здесь (или отпечатка нет):
 				# возможно, здесь обновили ключ. Говорим и оставляем как есть.
 				report.diverged.append(key)
@@ -287,40 +316,4 @@ def apply(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		base[key] = {**known, "plain": _digest(plain)}
 		report.applied.append(key)
 	_save_base(home, base)
-	return report
-
-	identity = identity_path(home)
-	have_key = identity.exists() and age_available()
-
-	for key, scope in registry.items():
-		if not scopes.matches(scopes.parse(scope), machine):
-			continue
-		cipher = _cipher_path(secrets_dir, key)
-		if not cipher.exists():
-			continue
-		if not have_key:
-			report.locked.append(key)
-			continue
-
-		result = subprocess.run(
-			["age", "--decrypt", "--identity", str(identity), str(cipher)],
-			capture_output=True)
-		if result.returncode != 0:
-			report.locked.append(key)
-			continue
-
-		plain = result.stdout
-		target = home / key
-		if target.exists():
-			if target.read_bytes() == plain:
-				continue
-			# Локальная версия другая: возможно, здесь обновили ключ.
-			# Молча затирать секрет нельзя — говорим и оставляем как есть.
-			report.diverged.append(key)
-			continue
-
-		target.parent.mkdir(parents=True, exist_ok=True)
-		target.write_bytes(plain)
-		target.chmod(0o600)
-		report.applied.append(key)
 	return report

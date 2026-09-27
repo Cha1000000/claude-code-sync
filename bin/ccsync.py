@@ -339,10 +339,15 @@ def _push_tools(context: Context, mapper: PathMapper) -> list[str]:
 	unreadable.extend(unreadable_host)
 	if sent:
 		done.append(f"host({len(sent)})")
-	encrypted = secrets.export(
+	encrypted, held = secrets.export(
 		config.parent, vault.tools_dir / secrets.SECRETS_DIR_NAME,
 		secrets.load_registry(vault.tools_dir / secrets.REGISTRY_FILE),
 		machine, dry_run=context.dry_run)
+	if held:
+		# Без этой строки человек решит, что его ключ уехал.
+		context.say(tr("[ccsync] секреты не отданы — здесь пустой шаблон или версию "
+					   "в хранилище не расшифровать, затирать её не стану: {names}",
+					   names=", ".join(held)))
 	if encrypted:
 		done.append(f"secrets({len(encrypted)})")
 	if stale:
@@ -685,7 +690,19 @@ def _pull_memory(context: Context, machine: identity.Machine) -> None:
 		encoding="utf-8")
 	facts = memoryscope.load_facts(facts_source)
 	index = memoryscope.render_local_index(facts, machine, link_prefix="facts/")
-	(memory_dir / "MEMORY.md").write_text(index, encoding="utf-8")
+	try:
+		saved = memoryscope.keep_foreign_index(memory_dir / "MEMORY.md")
+	except OSError as error:
+		# Не прочитали прежний или не сохранили копию — перезаписывать нельзя:
+		# в нём может быть память машины, которой больше нигде нет.
+		print(tr("[ccsync] MEMORY.md не обновлён — прежний не удалось сохранить "
+				 "({error}). Исправьте права или перенесите его руками", error=error),
+			  file=sys.stderr)
+	else:
+		if saved:
+			context.say(tr("[ccsync] прежний MEMORY.md этой машины сохранён: {path} — "
+						   "перенесите нужное в факты со scope", path=saved))
+		(memory_dir / "MEMORY.md").write_text(index, encoding="utf-8")
 	own = sum(1 for f in facts if f.applies_to(machine) and not f.is_global)
 	shared = sum(1 for f in facts if f.is_global)
 	context.say(tr("[ccsync] память: своих {own}, общих {shared}, всего {total}",
@@ -1152,16 +1169,21 @@ def cmd_mcp(context: Context, args) -> int:
 	template_path, scopes_path = _mcp_paths(context)
 	scope_map = tools.load_mcp_scopes(scopes_path)
 	wanted = tools._read_json(template_path, {})
-	if not isinstance(wanted, dict) or not wanted:
+	if not isinstance(wanted, dict):
+		wanted = {}
+	local = tools.read_global_config(context.config_dir).get("mcpServers") or {}
+	# Есть только здесь — уедут в шаблон при ближайшем push.
+	local_only = sorted(name for name in local if name not in wanted)
+	if args.name:
+		return _set_mcp_scope(context, args, machine, scope_map,
+							  set(wanted) | set(local_only), scopes_path)
+	if not wanted and not local_only:
 		print(tr("В хранилище нет ни одного MCP-сервера."))
 		return 0
-	if args.name:
-		return _set_mcp_scope(context, args, machine, scope_map, wanted, scopes_path)
 
 	mapper = context.mapper()
-	local = tools.read_global_config(context.config_dir).get("mcpServers") or {}
 	secrets = identity.load_secrets()
-	width = max(len(name) for name in wanted)
+	width = max(len(name) for name in [*wanted, *local_only])
 	foreign = 0
 	for name in sorted(wanted):
 		scope = tools.mcp_scope_for(scope_map, name)
@@ -1172,6 +1194,14 @@ def cmd_mcp(context: Context, args) -> int:
 			  + tr("здесь: {answer}",
 				   answer=tr("да ") if here else tr("нет"))
 			  + f"  {state}")
+	for name in local_only:
+		scope = tools.mcp_scope_for(scope_map, name)
+		print(f"  {name:<{width}}  {scopes.format(scope):<24}  "
+			  + tr("только здесь, в хранилище ещё нет"))
+	if local_only:
+		print("\n" + tr("Серверы этой машины уедут на все машины при ближайшем push. "
+						"Если сервер нужен только здесь — до push: "
+						"{command} mcp scope <имя> --here", command=_ccsync_hint()))
 	if foreign:
 		print("\n" + tr("Не для этой машины: {count}. "
 						"Вернуть общим: {command} mcp scope <имя> --global",
@@ -1198,7 +1228,7 @@ def _mcp_state(name, definition, local, mapper, secrets, here: bool) -> str:
 def _set_mcp_scope(context, args, machine, scope_map, wanted, scopes_path) -> int:
 	name = args.name
 	if name not in wanted:
-		print(tr("Сервера {name} в хранилище нет. Известные: {names}",
+		print(tr("Сервера {name} нет ни в хранилище, ни на этой машине. Известные: {names}",
 				 name=name, names=", ".join(sorted(wanted))), file=sys.stderr)
 		return 1
 	current = tools.mcp_scope_for(scope_map, name)
@@ -1600,11 +1630,20 @@ def cmd_adopt(context: Context, args) -> int:
 		_backup_and_replace(local, backup / name, destination, machine, moved, name)
 
 	memory_local = sessions.local_session_dir(config, machine.home) / MEMORY_LINK_NAME
+	unscoped: list[str] = []
+	# На первой машине хранилища заметке без scope растекаться некуда: её память
+	# и есть вся память, а `global` по умолчанию даст её будущим машинам. Со
+	# второй машины — только вручную: там это путь для чужих путей и софта.
+	first_machine = not context.vault.other_machines(machine.machine_id)
 	if memory_local.is_dir():
 		facts = context.vault.memory_facts_dir
 		facts.mkdir(parents=True, exist_ok=True)
 		for item in memory_local.glob("*.md"):
 			if item.name.upper() == "MEMORY.MD" or item.is_symlink():
+				continue
+			# Без scope заметка стала бы общей и уехала бы на все машины.
+			if not first_machine and not memoryscope.has_explicit_scope(item):
+				unscoped.append(item.name)
 				continue
 			target = facts / item.name
 			if not target.exists():
@@ -1614,6 +1653,21 @@ def cmd_adopt(context: Context, args) -> int:
 	if backup.exists():
 		print(tr("Резервная копия: {path}", path=backup))
 	print(tr("Перенесено в хранилище: {count} элементов", count=len(moved)))
+	if unscoped:
+		print(tr("Заметки памяти без scope НЕ перенесены ({count}) — разметьте "
+				 "metadata.scope и перенесите вручную в memory/facts/: {names}",
+				 count=len(unscoped), names=", ".join(sorted(unscoped))))
+	# Память Claude Code ведёт в каталоге каждого проекта, а adopt смотрит только
+	# домашний: про остальные надо сказать, иначе «перенесено N» звучит как «всё».
+	others = sorted(
+		str(directory) for directory in sessions.projects_root(config).glob("*/memory")
+		if directory.is_dir() and directory.resolve() != memory_local.resolve()
+		and any(item.is_file() and not item.is_symlink() for item in directory.glob("*.md")))
+	if others:
+		print(tr("Память других проектов adopt не просматривал — разберите вручную "
+				 "(BOOTSTRAP, шаг 7а):"))
+		for directory in others:
+			print(f"  {directory}")
 	return 0
 
 

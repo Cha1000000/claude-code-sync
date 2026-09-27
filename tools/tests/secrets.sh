@@ -158,5 +158,39 @@ sync2
 check "новый получатель расшифровывает" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K2" "$STAND/m2vault")"
 check "старый тоже" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K1" "$STAND/m2vault")"
 
+echo "ТЕСТ 10 — машина без ключа не затирает хранилище своим шаблоном"
+# Так выглядит новая машина: init положил шаблон из комментариев, age есть,
+# а расшифровать хранилище ещё нечем и снимка нет.
+sync2
+mv "$K2" "$K2.away"
+rm -f "$STAND/m2/.claude/ccsync-secrets-base.json"
+printf '# Локальные секреты этой машины\n# ИМЯ=значение\n' > "$STAND/m2/.claude/stand.key"
+out=$("$STAND/m2.sh" push tools 2>&1)
+sync1
+check "в хранилище прежний ключ" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K1" "$STAND/m1vault")"
+echo "$out" | grep -q "не отданы" && told=yes || told=no
+check "сказано, что придержан" yes "$told"
+
+echo "ТЕСТ 11 — шаблон из комментариев при pull заменяется настоящим"
+mv "$K2.away" "$K2"
+out=$("$STAND/m2.sh" pull tools 2>&1)
+check "секрет доехал вместо шаблона" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(cat "$STAND/m2/.claude/stand.key")"
+echo "$out" | grep -q "здесь другой" && diverged=yes || diverged=no
+check "не объявлен «разошедшимся»" no "$diverged"
+
+echo "ТЕСТ 12 — шаблон не отдаётся, даже когда расшифровать можно"
+# Ключ уже работает (машина со старым ключом уже перешифровала секреты под новую), а снимка ещё
+# нет и локально всё ещё шаблон — push не должен успеть раньше pull.
+sync2
+rm -f "$STAND/m2/.claude/ccsync-secrets-base.json"
+printf '\xef\xbb\xbf# шаблон с BOM\r\n# ИМЯ=значение\r\n' > "$STAND/m2/.claude/stand.key"
+out=$("$STAND/m2.sh" push tools 2>&1)
+sync1
+check "в хранилище прежний ключ" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(vault_plain "$K1" "$STAND/m1vault")"
+echo "$out" | grep -q "не отданы" && told=yes || told=no
+check "сказано, что придержан" yes "$told"
+"$STAND/m2.sh" pull tools >/dev/null 2>&1
+check "шаблон с BOM заменён при pull" "sk-stand-ЧЕТВЁРТАЯ-С-M2" "$(cat "$STAND/m2/.claude/stand.key")"
+
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $((fail > 0))

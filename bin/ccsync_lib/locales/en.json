@@ -79,6 +79,7 @@
   "[ccsync] проект {key} не синхронизируется — пропускаю": "[ccsync] project {key} is not synced — skipping",
   "[ccsync] секреты не расшифровать ({names}): нет ~/{identity} или не установлен age": "[ccsync] cannot decrypt secrets ({names}): no ~/{identity} or age is not installed",
   "[ccsync] секреты: {names}": "[ccsync] secrets: {names}",
+  "[ccsync] секреты не отданы — здесь пустой шаблон или версию в хранилище не расшифровать, затирать её не стану: {names}": "[ccsync] secrets not pushed — this is an empty template or the vault copy cannot be decrypted here, not overwriting it: {names}",
   "[ccsync] сессии {key}: {count} → {path}{bound}": "[ccsync] sessions {key}: {count} → {path}{bound}",
   "[ccsync] сессия {id} помечена как не синхронизируемая — пропускаю": "[ccsync] session {id} is marked private — skipping",
   "[ccsync] убрано прежних раскладок: {count}": "[ccsync] earlier layouts cleaned up: {count}",
@@ -162,7 +163,6 @@
   "Резервная копия: {path}": "Backup: {path}",
   "Сводка по репозиторию. На каждой машине Claude Code видит свой срез —\nего собирает `ccsync pull` в локальный MEMORY.md по полю `metadata.scope`.": "An overview of the repository. On each machine Claude Code sees its own slice —\n`ccsync pull` assembles it into a local MEMORY.md from the `metadata.scope` field.",
   "Секреты не синхронизируются. Добавить: {command} secrets add ~/.claude/имя": "No secrets are synced. To add one: {command} secrets add ~/.claude/name",
-  "Сервера {name} в хранилище нет. Известные: {names}": "There is no server {name} in the vault. Known ones: {names}",
   "Сессия {id} ({key}) больше не уедет в хранилище.": "Session {id} ({key}) will no longer travel to the vault.",
   "Сессия {id} ({key}) забыта:": "Session {id} ({key}) forgotten:",
   "Сессия {id} и не была помечена.": "Session {id} was not marked in the first place.",
@@ -265,5 +265,12 @@
   "что расходится": "what differs",
   "шаблон настроек не разбирается как JSON: {error}": "the settings template does not parse as JSON: {error}",
   "элементы scope": "scope entries",
-  "✓ — есть здесь; · — применим здесь, но файла нет": "✓ — present here; · — applies here, but the file is missing"
+  "✓ — есть здесь; · — применим здесь, но файла нет": "✓ — present here; · — applies here, but the file is missing",
+  "[ccsync] прежний MEMORY.md этой машины сохранён: {path} — перенесите нужное в факты со scope": "[ccsync] this machine's previous MEMORY.md saved: {path} — move what you need into scoped facts",
+  "Заметки памяти без scope НЕ перенесены ({count}) — разметьте metadata.scope и перенесите вручную в memory/facts/: {names}": "Memory notes without a scope were NOT moved ({count}) — set metadata.scope and move them to memory/facts/ by hand: {names}",
+  "только здесь, в хранилище ещё нет": "only here, not in the vault yet",
+  "Серверы этой машины уедут на все машины при ближайшем push. Если сервер нужен только здесь — до push: {command} mcp scope <имя> --here": "This machine's servers will go to every machine on the next push. If a server is needed only here, before pushing: {command} mcp scope <name> --here",
+  "Сервера {name} нет ни в хранилище, ни на этой машине. Известные: {names}": "Server {name} is neither in the vault nor on this machine. Known: {names}",
+  "[ccsync] MEMORY.md не обновлён — прежний не удалось сохранить ({error}). Исправьте права или перенесите его руками": "[ccsync] MEMORY.md not updated — could not save the previous one ({error}). Fix the permissions or move it by hand",
+  "Память других проектов adopt не просматривал — разберите вручную (BOOTSTRAP, шаг 7а):": "adopt did not look at the memory of other projects — go through it by hand (BOOTSTRAP, step 7a):"
 }
