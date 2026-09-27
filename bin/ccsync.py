@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -32,7 +34,7 @@ from ccsync_lib import (conflicts, hostfiles, identity, ignore, memoryscope,
                         migrate_registry, redact, scopes, secrets, sessions, tools)
 from ccsync_lib.gitutil import Git
 from ccsync_lib.i18n import tr
-from ccsync_lib.paths import PathMapper
+from ccsync_lib.paths import PathMapper, slug_for
 from ccsync_lib.vault import (RESERVED_SESSION_DIRS, Vault, find_candidates,
                               project_key_from_path)
 
@@ -62,6 +64,20 @@ class Context:
 		self.git = Git(self.root)
 		self.config_dir = identity.claude_config_dir()
 		self.machine = identity.load_machine()
+		# Настоящее место хранилища. В --dry-run root указывает на одноразовую
+		# копию, а в settings.json записан именно этот путь — от него зависит
+		# свёртка в {{VAULT}}, и с путём копии она бы не сработала.
+		self.real_root = self.root
+		# --dry-run: на машину ничего не пишется, только перечисляется.
+		self.dry_run = False
+
+	def sandboxed(self, root: Path) -> "Context":
+		"""Двойник для --dry-run: то же окружение, хранилище — одноразовая копия."""
+		twin = object.__new__(Context)
+		twin.__dict__.update(self.__dict__)
+		twin.root, twin.vault, twin.git = root, Vault(root), Git(root)
+		twin.dry_run = True
+		return twin
 
 	def require_machine(self) -> identity.Machine:
 		if self.machine is None:
@@ -80,6 +96,8 @@ class Context:
 
 	def say(self, message: str) -> None:
 		if not self.quiet:
+			if self.dry_run:
+				message = message.replace("[ccsync]", "[ccsync dry-run]", 1)
 			print(message)
 
 
@@ -124,6 +142,8 @@ def cmd_init(context: Context, args) -> int:
 # --- push ---------------------------------------------------------------
 
 def cmd_push(context: Context, args) -> int:
+	if args.dry_run and not context.dry_run:
+		return _run_in_sandbox(context, args, cmd_push, outgoing=True)
 	machine = context.require_machine()
 	what = args.what
 	if args.debounce and _debounced(context, args.debounce):
@@ -155,6 +175,8 @@ def cmd_push(context: Context, args) -> int:
 	message = f"sync from {machine.machine_id}: " + ", ".join(done)
 	commit = context.git.commit_all(message)
 	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
+	if context.dry_run:
+		return 0
 	push = context.git.push()
 	if not push.ok:
 		print(tr("[ccsync] push не прошёл: {error}", error=push.err or push.out),
@@ -163,6 +185,38 @@ def cmd_push(context: Context, args) -> int:
 	_stamp_push(context)
 	context.say(tr("[ccsync] отправлено"))
 	return 0
+
+
+def _run_in_sandbox(context: Context, args, command, *, outgoing: bool) -> int:
+	"""--dry-run: выполнить команду на одноразовой копии хранилища.
+
+	Превью считает тот же код, что и боевой запуск, а не его пересказ: копия
+	подтягивает свежее из того же remote, команда отрабатывает на ней целиком,
+	после чего копия выбрасывается. Отправки нет, а всё, что пишется вне
+	хранилища — на саму машину, — в этом режиме только перечисляется.
+	"""
+	print(tr("--dry-run: прогон на копии хранилища, ничего не меняется."))
+	with tempfile.TemporaryDirectory(prefix="ccsync-dry-run-") as tmp:
+		sandbox = Path(tmp) / context.root.name
+		shutil.copytree(context.root, sandbox, symlinks=True)
+		probe = context.sandboxed(sandbox)
+		start = probe.git.head()
+		code = command(probe, args)
+		if outgoing:
+			upstream = probe.git.run("rev-parse", "--verify", "--quiet", "@{u}")
+			base = upstream.out.strip() if upstream.ok and upstream.out.strip() else start
+			_print_changes(probe, base, tr("Ушло бы в хранилище:"))
+		else:
+			_print_changes(probe, start, tr("Пришло бы из хранилища:"))
+	print(tr("--dry-run: ни машина, ни хранилище не изменены."))
+	return code
+
+
+def _print_changes(context: Context, base: str, title: str) -> None:
+	stat = context.git.run("diff", "--stat", base, "HEAD")
+	text = stat.out.strip() if stat.ok else ""
+	print(title)
+	print(text or tr("  ничего"))
 
 
 def _pull_and_settle(context: Context) -> bool:
@@ -208,7 +262,7 @@ def _pull_and_settle(context: Context) -> bool:
 def _refresh_machine_record(context: Context, machine: identity.Machine) -> None:
 	"""Поддерживать в реестре актуальную версию Claude Code этой машины."""
 	current = identity.detect_claude_version()
-	if current and current != machine.claude_version:
+	if current and current != machine.claude_version and not context.dry_run:
 		machine.claude_version = current
 		identity.save_machine(machine)
 	context.vault.register_machine(machine)
@@ -228,14 +282,29 @@ def _push_tools(context: Context, mapper: PathMapper) -> list[str]:
 	vault, config = context.vault, context.config_dir
 	machine = context.require_machine()
 	done: list[str] = []
+	# Не отданное из-за того, что в хранилище версия новее здешней.
+	stale: list[str] = []
+	# Не отданное из-за ошибки: битый файл в хранилище, нечитаемый здесь.
+	damaged: list[str] = []
+	unreadable: list[str] = []
 	settings_template = vault.tools_dir / "settings.template.json"
-	python_exe, root = sys.executable, context.root
-	if tools.export_settings(config, settings_template, mapper, python_exe, root):
-		done.append("settings")
-		# То, что мы только что отдали, становится базой для будущих слияний:
-		# иначе следующий pull посчитал бы наши же правки «чужими».
-		tools.remember_settings_base(settings_template, config, mapper, python_exe, root,
-									 machine.os)
+
+	def guarded(export, *args, **kwargs):
+		"""Битый файл хранилища останавливает только свой механизм, не весь push."""
+		try:
+			return export(*args, **kwargs)
+		except tools.DamagedFile as error:
+			damaged.append(error.path.name)
+			return None
+
+	result = guarded(tools.export_settings, config, settings_template, mapper,
+					 sys.executable, context.real_root, dry_run=context.dry_run)
+	if result:
+		settings_sent, settings_stale = result
+		if settings_sent:
+			done.append("settings")
+		if settings_stale:
+			stale.append("settings.json")
 
 	# Там, где симлинки недоступны (Windows без Developer Mode), локальные папки —
 	# копии, и правки в них надо забрать обратно руками, иначе новый скилл,
@@ -246,29 +315,51 @@ def _push_tools(context: Context, mapper: PathMapper) -> list[str]:
 			copied = tools.merge_tree(local, vault.tools_dir / name)
 			if copied:
 				done.append(f"{name}({copied})")
-	secret_keys = tools.export_mcp(
-		config, vault.tools_dir / "mcp-servers.template.json", mapper,
-		machine, vault.tools_dir / tools.MCP_SCOPES_FILE)
-	done.append(f"mcp({len(secret_keys)} секретов замаскировано)" if secret_keys else "mcp")
-	tools.export_plugins(config, vault.tools_dir / "plugins.json")
-	done.append("plugins")
-	copied = tools.export_copied(config, vault.tools_dir)
-	if copied:
-		done.append(f"files({len(copied)})")
-	sent = hostfiles.export(
+	result = guarded(tools.export_mcp, config, vault.tools_dir / "mcp-servers.template.json",
+					 mapper, machine, vault.tools_dir / tools.MCP_SCOPES_FILE,
+					 dry_run=context.dry_run)
+	if result:
+		secret_keys, stale_mcp = result
+		stale.extend(stale_mcp)
+		done.append(f"mcp({len(secret_keys)} секретов замаскировано)" if secret_keys else "mcp")
+	if guarded(tools.export_plugins, config, vault.tools_dir / "plugins.json",
+			   settings_template, dry_run=context.dry_run):
+		done.append("plugins")
+	result = guarded(tools.export_copied, config, vault.tools_dir, dry_run=context.dry_run)
+	if result:
+		copied, stale_copied = result
+		stale.extend(stale_copied)
+		if copied:
+			done.append(f"files({len(copied)})")
+	sent, stale_host, unreadable_host = hostfiles.export(
 		config.parent, config, vault.tools_dir / hostfiles.HOST_DIR_NAME,
 		hostfiles.load_registry(vault.tools_dir / hostfiles.REGISTRY_FILE),
-		mapper, machine)
+		mapper, machine, dry_run=context.dry_run)
+	stale.extend(stale_host)
+	unreadable.extend(unreadable_host)
 	if sent:
 		done.append(f"host({len(sent)})")
 	encrypted = secrets.export(
 		config.parent, vault.tools_dir / secrets.SECRETS_DIR_NAME,
 		secrets.load_registry(vault.tools_dir / secrets.REGISTRY_FILE),
-		machine)
+		machine, dry_run=context.dry_run)
 	if encrypted:
 		done.append(f"secrets({len(encrypted)})")
+	if stale:
+		# Молча пропускать нельзя: человек решит, что отдал свою правку.
+		context.say(tr("[ccsync] не отдано — в хранилище другая версия, а здесь "
+					   "не правили или ещё нет снимка: {names}",
+					   names=", ".join(stale)))
+		context.say(tr("[ccsync]   подтянуть: {command} pull tools",
+					   command=_ccsync_hint()))
+	# Ошибки — в stderr и без оглядки на --quiet: их нужно чинить руками.
+	if damaged:
+		print(tr("[ccsync] не отдано — файл в хранилище повреждён, почини его "
+				 "вручную: {names}", names=", ".join(damaged)), file=sys.stderr)
+	if unreadable:
+		print(tr("[ccsync] не отдано — файл здесь не читается как текст UTF-8: {names}",
+				 names=", ".join(unreadable)), file=sys.stderr)
 	return done
-
 
 def _push_memory(context: Context) -> list[str]:
 	facts = memoryscope.load_facts(context.vault.memory_facts_dir)
@@ -322,6 +413,24 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 	return [f"session {key}/{transcript.stem[:8]}"] if report.moved else []
 
 
+def _project_path_for_slug(context: Context, slug: str, fallback: str) -> str:
+	"""Путь проекта по имени его папки в ~/.claude/projects.
+
+	Слаг необратим — любой символ вне [A-Za-z0-9] превратился в дефис, поэтому
+	разобрать его обратно нельзя. Сверяем с путями, которые и так известны:
+	привязки этой машины и домашний каталог.
+	"""
+	if slug_for(fallback) == slug:
+		return fallback
+	for path in context.mapper().project_paths.values():
+		if slug_for(path) == slug:
+			return path
+	machine = context.require_machine()
+	if machine.home and slug_for(machine.home) == slug:
+		return machine.home
+	return fallback
+
+
 def _locate_transcript(context: Context, args) -> tuple[Path | None, str, str]:
 	"""Найти транскрипт: из хука, по id, по id текущей сессии, самый свежий.
 
@@ -349,6 +458,12 @@ def _locate_transcript(context: Context, args) -> tuple[Path | None, str, str]:
 		# сперва в каталог текущего cwd нельзя: рядом может лежать застывший
 		# дубль той же сессии, разложенный из хранилища, — и он перехватит.
 		found = ignore.find_local_transcript(sessions.projects_root(context.config_dir), wanted)
+		if found is not None and not args.project:
+			# Сессию искали по всем каталогам проектов, и найтись она могла не
+			# там, откуда нас позвали: достаточно было сделать cd. Проект берём
+			# у самого файла, иначе пометка уедет в чужой ключ. Явный --project
+			# сильнее: раз человек указал проект, ему виднее.
+			project_path = _project_path_for_slug(context, found.parent.name, project_path)
 		return found, project_path, wanted
 
 	newest = sessions.newest_transcript(directory)
@@ -381,6 +496,8 @@ def _stamp_push(context: Context) -> None:
 # --- pull ---------------------------------------------------------------
 
 def cmd_pull(context: Context, args) -> int:
+	if args.dry_run and not context.dry_run:
+		return _run_in_sandbox(context, args, cmd_pull, outgoing=False)
 	machine = context.require_machine()
 	what = args.what
 	before = context.git.head()
@@ -400,12 +517,19 @@ def cmd_pull(context: Context, args) -> int:
 	return 0
 
 
+def _report_damaged(error: "tools.DamagedFile") -> None:
+	print(tr("[ccsync] не применено — файл в хранилище повреждён, почини его "
+			 "вручную: {name}", name=error.path.name), file=sys.stderr)
+
+
 def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 	vault, config = context.vault, context.config_dir
 	# На Windows симлинки доступны при Developer Mode; пробуем, откат — копия.
 	allow_symlink = True
 
-	for name in tools.LINKED_DIRS:
+	# Каталоги — симлинки в хранилище: что в них придёт, видно по отчёту
+	# о пришедшем, а связывать их с одноразовой копией бессмысленно.
+	for name in () if context.dry_run else tools.LINKED_DIRS:
 		source = vault.tools_dir / name
 		if not source.exists():
 			continue
@@ -421,7 +545,11 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 							   "(без симлинка; см. `ccsync adopt`)",
 							   name=name, count=merged))
 
-	applied, kept = tools.apply_copied(config, vault.tools_dir)
+	try:
+		applied, kept = tools.apply_copied(config, vault.tools_dir, dry_run=context.dry_run)
+	except tools.DamagedFile as error:
+		_report_damaged(error)
+		applied, kept = [], []
 	for name in applied:
 		context.say(tr("[ccsync] {name}: обновлён", name=name))
 	for name in kept:
@@ -431,22 +559,29 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 
 	try:
 		if tools.apply_settings(vault.tools_dir / "settings.template.json", config, mapper,
-								sys.executable, context.root, context.require_machine().os):
+								sys.executable, context.real_root, context.require_machine().os,
+								dry_run=context.dry_run):
 			context.say(tr("[ccsync] settings.json обновлён "
 						   "(прежний — в settings.json.bak)"))
 	except ValueError as error:
 		print(tr("[ccsync] настройки не применены: {error}", error=error),
 			  file=sys.stderr)
 
-	report = tools.apply_mcp(
-		vault.tools_dir / "mcp-servers.template.json",
-		mapper,
-		identity.load_secrets(),
-		config,
-		machine=context.require_machine(),
-		scopes_path=vault.tools_dir / tools.MCP_SCOPES_FILE,
-		dry_run=args.dry_run,
-	)
+	try:
+		report = tools.apply_mcp(
+			vault.tools_dir / "mcp-servers.template.json",
+			mapper,
+			identity.load_secrets(),
+			config,
+			machine=context.require_machine(),
+			scopes_path=vault.tools_dir / tools.MCP_SCOPES_FILE,
+			dry_run=args.dry_run,
+		)
+	except tools.DamagedFile as error:
+		# Один битый шаблон не должен обрывать pull на полпути: остальное
+		# (обвязка, секреты, плагины) применяется как обычно.
+		_report_damaged(error)
+		report = tools.ToolsReport()
 	if report.applied:
 		context.say("[ccsync] MCP: " + ", ".join(report.applied))
 	if report.removed:
@@ -456,6 +591,14 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 		context.say(tr(
 			"[ccsync] MCP {name} помечен как не для этой машины, но правлен здесь руками "
 			"— оставлен. Убрать: claude mcp remove {name} -s user", name=name))
+	for name in report.kept_local:
+		context.say(tr("[ccsync] MCP {name} правлен здесь — оставлен как есть. "
+					   "Отдать свою версию: {command} push tools",
+					   name=name, command=_ccsync_hint()))
+	for name in report.deleted_here:
+		context.say(tr("[ccsync] MCP {name} удалён здесь — не возвращаю. "
+					   "Отдать удаление: {command} push tools",
+					   name=name, command=_ccsync_hint()))
 	for name, problem in report.unusable:
 		context.say(tr("[ccsync] MCP {name} здесь не запустится: {problem}",
 					   name=name, problem=problem))
@@ -468,6 +611,8 @@ def _pull_tools(context: Context, mapper: PathMapper, args) -> None:
 				 path=identity.secrets_file_path(),
 				 names=", ".join(report.missing_secrets)),
 			  file=sys.stderr)
+	if not context.dry_run:
+		tools.remember_plugins_agreement(config, vault.tools_dir / "plugins.json")
 	absent = tools.missing_plugins(vault.tools_dir / "plugins.json", config)
 	if absent:
 		context.say(tr("[ccsync] плагины не установлены здесь: {names}",
@@ -517,6 +662,13 @@ def _pull_memory(context: Context, machine: identity.Machine) -> None:
 	facts_source = context.vault.memory_facts_dir
 	if not facts_source.exists():
 		return
+	if context.dry_run:
+		facts = memoryscope.load_facts(facts_source)
+		own = sum(1 for f in facts if f.applies_to(machine) and not f.is_global)
+		shared = sum(1 for f in facts if f.is_global)
+		context.say(tr("[ccsync] память: своих {own}, общих {shared}, всего {total}",
+					   own=own, shared=shared, total=len(facts)))
+		return
 	memory_dir = sessions.local_session_dir(context.config_dir, machine.home) / MEMORY_LINK_NAME
 	memory_dir.mkdir(parents=True, exist_ok=True)
 	facts_link = memory_dir / "facts"
@@ -552,8 +704,10 @@ def _pull_sessions(context: Context, args) -> None:
 		key = directory.name
 		local_path, is_bound = _resolve_or_bind(context, key, args)
 		target = sessions.local_session_dir(context.config_dir, local_path)
-		Path(local_path).mkdir(parents=True, exist_ok=True)
-		report = sessions.pull_sessions(directory, target, mapper, local_path)
+		if not context.dry_run:
+			Path(local_path).mkdir(parents=True, exist_ok=True)
+		report = sessions.pull_sessions(directory, target, mapper, local_path,
+										dry_run=context.dry_run)
 		if report.moved:
 			# Спрашиваем не mapper: он собран до цикла и про привязку, сделанную
 			# только что автопоиском, ещё не знает — вышло бы «найден и привязан»
@@ -572,7 +726,7 @@ def _pull_sessions(context: Context, args) -> None:
 		for transcript in sorted(directory.glob("*.jsonl")):
 			removed, spared = sessions.drop_stale_copies(
 				projects_root, transcript.stem, target / transcript.name,
-				skip_session_id=alive,
+				skip_session_id=alive, dry_run=context.dry_run,
 			)
 			stale += len(removed)
 			for path in spared:
@@ -642,7 +796,8 @@ def _resolve_or_bind(context: Context, key: str, args) -> tuple[str, bool]:
 					   key=key, path=candidates[0]))
 		return candidates[0], True
 
-	interactive = sys.stdin.isatty() and not context.quiet and not args.no_autobind
+	interactive = (sys.stdin.isatty() and not context.quiet and not args.no_autobind
+				   and not context.dry_run)
 	if interactive:
 		if candidates:
 			context.say(tr("[ccsync] кандидаты для {key}:", key=key))
@@ -667,13 +822,28 @@ def _vault_copy(context: Context, session_id: str) -> Path | None:
 	return next(context.vault.sessions_dir.glob(f"*/{session_id}.jsonl"), None)
 
 
+def _project_key_for_path(context: Context, path: str) -> str:
+	"""Ключ проекта для пути: сперва точная привязка, иначе разбор имени каталога.
+
+	Сверяем именно точное совпадение. «home» привязан к домашнему каталогу и
+	формально накрывает собой всё, что внутри, но ~/projects/foo — это «foo», а не «home».
+	"""
+	target = str(Path(path))
+	for key, root in context.mapper().project_paths.items():
+		if str(Path(root)) == target:
+			return key
+	return project_key_from_path(path)
+
+
 def _session_target(context: Context, args) -> tuple[str, Path | None, str]:
 	"""Что помечаем: id сессии, её локальный файл и ключ проекта."""
 	transcript, project_path, session_id = _locate_transcript(context, args)
 	copy_in_vault = _vault_copy(context, session_id) if session_id else None
 	# Ключ берём у уже уехавшей копии: он точнее, чем вычисленный из пути,
-	# и не заводит лишнюю запись в project-map.json.
-	key = copy_in_vault.parent.name if copy_in_vault else project_key_from_path(project_path)
+	# и не заводит лишнюю запись в project-map.json. Следом — привязка проекта:
+	# домашний каталог — это ключ «home», а не имя пользователя, как решил бы разбор пути.
+	key = (copy_in_vault.parent.name if copy_in_vault
+		   else _project_key_for_path(context, project_path))
 	return session_id, transcript, key
 
 
@@ -842,6 +1012,9 @@ def _apply_tombstones(context: Context) -> None:
 			# огрызок. Уборку сделает хук при закрытии, флаг уже стоит.
 			continue
 		copies = ignore.find_local_transcripts(projects_root, stone.session_id)
+		if context.dry_run:
+			removed += len(copies)
+			continue
 		if copies:
 			failed = False
 			for transcript in copies:

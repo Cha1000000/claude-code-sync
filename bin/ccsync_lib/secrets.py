@@ -181,7 +181,7 @@ def _encrypt(data: bytes, recipients: list[str], target: Path) -> bool:
 
 
 def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
-		   machine: Machine) -> list[str]:
+		   machine: Machine, *, dry_run: bool = False) -> list[str]:
 	"""Зашифровать в хранилище секреты, правленные здесь. Возвращает имена отданных.
 
 	Секрет, не менявшийся здесь со времени последней синхронизации, заново не
@@ -230,7 +230,9 @@ def export(home: Path, secrets_dir: Path, registry: dict[str, list[str]],
 		if _encrypt(local, recipients, target):
 			base[key] = {"plain": local_digest, "recipients": recipients_now}
 			sent.append(key)
-	_save_base(home, base)
+	# База — на машине, не в хранилище: в dry-run её не трогаем.
+	if not dry_run:
+		_save_base(home, base)
 	return sent
 
 

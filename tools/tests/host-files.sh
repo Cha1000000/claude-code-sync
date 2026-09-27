@@ -133,6 +133,44 @@ check "юнит на маке не появился" "нет" \
 check "а скрипт — появился" "да" \
 	"$([ -e "$STAND/m2/.local/bin/tool.sh" ] && echo да || echo нет)"
 
+T1=$STAND/m1/.local/bin/tool.sh; T2=$STAND/m2/.local/bin/tool.sh
+V1=$STAND/m1vault/tools/host/bin/tool.sh
+sync1() { (cd "$STAND/m1vault" && git pull -q --rebase 2>/dev/null); }
+
+echo "ТЕСТ 6 — push устаревшей копии не затирает свежую (случай 27.09)"
+# У m2 нетронутая «версия два» и снимок той же версии, а m1 уже отдал новую.
+printf '#!/bin/bash\necho версия три\n' > "$T1"
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+out=$("$STAND/m2.sh" push tools 2>&1)
+sync1
+check "в хранилище осталась версия три" "да" "$(grep -q 'версия три' "$V1" && echo да || echo нет)"
+check "push сказал, что tool.sh не отдан" "да" \
+	"$(echo "$out" | grep -q 'не отдано.*bin/tool.sh' && echo да || echo нет)"
+"$STAND/m2.sh" pull tools >/dev/null 2>&1
+check "pull привёз версию три" "да" "$(grep -q 'версия три' "$T2" && echo да || echo нет)"
+
+echo "ТЕСТ 7 — без снимка push не затирает хранилище"
+printf '#!/bin/bash\necho версия четыре\n' > "$T1"
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+rm -rf "$STAND/m2/.claude/ccsync-host-base"
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+sync1
+check "в хранилище осталась версия четыре" "да" "$(grep -q 'версия четыре' "$V1" && echo да || echo нет)"
+"$STAND/m2.sh" pull tools >/dev/null 2>&1
+check "pull привёз версию четыре" "да" "$(grep -q 'версия четыре' "$T2" && echo да || echo нет)"
+
+echo "ТЕСТ 8 — правка, сделанная здесь, уезжает"
+printf '#!/bin/bash\necho правка на m2\n' > "$T2"
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+sync1
+check "правка m2 в хранилище" "да" "$(grep -q 'правка на m2' "$V1" && echo да || echo нет)"
+
+echo "ТЕСТ 9 — нечитаемый файл обвязки не пропускается молча"
+printf '#!/bin/bash\n# \xff\xfe не UTF-8\n' > "$T2"
+out=$("$STAND/m2.sh" push tools 2>&1)
+check "push сказал, что tool.sh не прочитать" "да" \
+	"$(echo "$out" | grep -q 'не читается.*bin/tool.sh' && echo да || echo нет)"
+
 echo
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $fail

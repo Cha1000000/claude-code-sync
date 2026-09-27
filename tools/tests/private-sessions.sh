@@ -161,6 +161,22 @@ rm -f "$STAND/m1/.claude/.ccsync-last-push"
 "$STAND/m1.sh" push session --session $F >/dev/null 2>&1
 check "после undo проект снова синхронизируется" "да" "$(has $F)"
 
+echo "ТЕСТ 11 — forget живой сессии из чужого каталога: ключ по месту файла"
+# Сессия ведётся в проекте work, в хранилище её ещё нет, а forget зовут из
+# домашнего каталога: Клод успел сделать cd. Ключ должен быть work — иначе
+# пометка и отметка для других машин уедут в чужой проект.
+G=99999999-aaaa-aaaa-aaaa-999999999999
+printf '{"type":"user","cwd":"%s","sessionId":"%s","message":{"role":"user","content":"текст"}}\n' \
+	"$STAND/m1/work" "$G" > "$STAND/m1/.claude/projects/$SLUG/$G.jsonl"
+cd "$STAND/m1"
+env HOME="$STAND/m1" CLAUDE_CONFIG_DIR="$STAND/m1/.claude" CLAUDE_CODE_SESSION_ID=$G \
+	python3 "$STAND/m1vault/bin/ccsync.py" forget --yes >/dev/null 2>&1
+key_of() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d$2)" "$1" 2>/dev/null; }
+check "пометка записана под ключом work" "work" \
+	"$(key_of "$STAND/m1/.claude/ccsync-ignore.json" "['ignored']['$G']['project_key']")"
+check "отметка для других машин — под ключом work" "work" \
+	"$(key_of "$STAND/m1vault/sessions/tombstones/$G.json" "['project_key']")"
+
 echo
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $fail

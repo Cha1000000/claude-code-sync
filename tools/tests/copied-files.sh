@@ -101,6 +101,42 @@ sync2; "$STAND/m2.sh" pull tools >/dev/null 2>&1
 check "свой файл приехал на m2" "моя статус-строка" \
 	"$(cat "$STAND/m2/.claude/my-statusline.py" 2>/dev/null)"
 
+echo "ТЕСТ 7 — push без снимка не затирает хранилище (случай 27.09)"
+# Машина давно не синхронизировалась, а снимков у неё нет вовсе: движок со
+# снимками пришёл позже. Её копия устарела, и по одной копии не понять, чья
+# версия новее, — значит, отдавать её нельзя.
+echo "свежее с m1" > "$M1"
+"$STAND/m1.sh" push tools >/dev/null 2>&1
+rm -rf "$STAND/m2/.claude/ccsync-copied-base"
+echo "старьё на m2" > "$M2"
+out=$("$STAND/m2.sh" push tools 2>&1)
+sync1
+check "хранилище сохранило правку m1" "свежее с m1" "$(cat "$VAULT1")"
+check "push сказал, что CLAUDE.md не отдан" "да" \
+	"$(echo "$out" | grep -q 'не отдано.*CLAUDE.md' && echo да || echo нет)"
+check "локальная копия push-ем не тронута" "старьё на m2" "$(cat "$M2")"
+"$STAND/m2.sh" pull tools >/dev/null 2>&1
+check "pull привёз свежее" "свежее с m1" "$(cat "$M2")"
+check "старьё сохранено в .bak" "старьё на m2" "$(cat "$M2.bak" 2>/dev/null)"
+
+echo "ТЕСТ 8 — без снимка новый файл отдаётся: в хранилище его ещё нет"
+rm -rf "$STAND/m2/.claude/ccsync-copied-base"
+printf '["my-statusline.py", "новый.txt"]\n' > "$STAND/m2vault/tools/copied-files.json"
+(cd "$STAND/m2vault" && git add -A && git commit -qm "список" && git push -q) >/dev/null 2>&1
+echo "новый файл m2" > "$STAND/m2/.claude/новый.txt"
+"$STAND/m2.sh" push tools >/dev/null 2>&1
+sync1
+check "новый файл уехал" "новый файл m2" "$(cat "$STAND/m1vault/tools/новый.txt" 2>/dev/null)"
+
+echo "ТЕСТ 9 — битый copied-files.json не схлопывается молча в пустой список"
+echo '["my-statusline.py",' > "$STAND/m2vault/tools/copied-files.json"
+out=$("$STAND/m2.sh" push tools 2>&1)
+check "push сказал, что список повреждён" "да" \
+	"$(echo "$out" | grep -q 'повреждён.*copied-files.json' && echo да || echo нет)"
+out=$("$STAND/m2.sh" pull tools 2>&1)
+check "pull тоже сказал" "да" \
+	"$(echo "$out" | grep -q 'повреждён.*copied-files.json' && echo да || echo нет)"
+
 echo "ИТОГО: успешно $ok, провалено $fail"
 rm -rf "$STAND"
 exit $((fail > 0))

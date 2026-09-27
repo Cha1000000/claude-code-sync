@@ -148,30 +148,53 @@ def wants_enable(text: str) -> bool:
 
 def export(home: Path, config_dir: Path, host_dir: Path,
 		   registry: dict[str, list[str]], mapper: PathMapper,
-		   machine: Machine) -> list[str]:
+		   machine: Machine, *, dry_run: bool = False) -> tuple[list[str], list[str], list[str]]:
 	"""Забрать локальные файлы в хранилище, заменив пути на токены.
 
+	Возвращает (отданные, не отданные, нечитаемые). Не отдаётся файл, у которого в
+	хранилище другая версия, если здесь он со времени последней синхронизации
+	не менялся или снимка нет вовсе: это свежая правка с другой машины, и
+	выгрузка откатила бы её. Снимок заведёт ближайший pull.
+
 	Файл, которого здесь нет, — не ошибка: его могло не быть на этой машине
-	вовсе (чужой scope) или он ещё не приехал.
+	вовсе (чужой scope) или он ещё не приехал. А вот файл, который есть, но не
+	читается как текст, — это здешняя правка, которая молча не уехала бы.
+
+	dry_run — снимок на машине не обновляется.
 	"""
 	sent: list[str] = []
+	stale: list[str] = []
+	unreadable: list[str] = []
 	for key in sorted(registry):
 		if not is_known(key) or not applies_here(registry, key, machine):
 			continue
 		source = local_path(home, key)
 		text = _read_text(source)
 		if text is None:
+			if source.exists():
+				unreadable.append(key)
 			continue
 		tokenized = mapper.tokenize(text)
 		target = vault_path(host_dir, key)
-		if _read_text(target) == tokenized:
+		stored = _read_text(target)
+		base_path = _base_path(config_dir, key)
+		base = _read_text(base_path)
+		if stored == tokenized:
+			# Совпало с хранилищем — это и есть общая версия; снимок
+			# подтягиваем к ней, чтобы следующее сравнение было честным.
+			if base != text and not dry_run:
+				_write_text(base_path, text)
+			continue
+		if stored is not None and (base is None or text == base):
+			stale.append(key)
 			continue
 		_write_text(target, tokenized)
 		# То, что мы только что отдали, становится снимком: иначе следующий
 		# pull посчитал бы нашу же правку чужой и не стал бы её применять.
-		_write_text(_base_path(config_dir, key), text)
+		if not dry_run:
+			_write_text(base_path, text)
 		sent.append(key)
-	return sent
+	return sent, stale, unreadable
 
 
 # --- pull ---------------------------------------------------------------

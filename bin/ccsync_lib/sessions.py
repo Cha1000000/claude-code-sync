@@ -453,7 +453,8 @@ def split_transcript(transcript: Path, backup_dir: Path | None = None) -> list[S
 
 
 def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
-					  *, skip_session_id: str | None = None) -> tuple[list[Path], list[Path]]:
+					  *, skip_session_id: str | None = None,
+					  dry_run: bool = False) -> tuple[list[Path], list[Path]]:
 	"""Убрать копии сессии, оставшиеся в других каталогах проектов.
 
 	Такие копии появляются, когда проект меняет место: пока он не привязан,
@@ -471,7 +472,8 @@ def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 	Файл текущей сессии не трогаем никогда — Claude Code пишет в него прямо
 	сейчас.
 
-	Возвращает (удалённые, оставленные-из-осторожности).
+	Возвращает (удалённые, оставленные-из-осторожности). В dry_run ничего не
+	удаляется — «удалённые» означает «были бы удалены».
 	"""
 	if not projects_root.is_dir():
 		return [], []
@@ -499,6 +501,9 @@ def drop_stale_copies(projects_root: Path, session_id: str, keep: Path,
 			# Записи на месте, но в оставляемой они выпали из цепочки: её
 			# восстановление даст другой разговор. Тоже не наше дело решать.
 			spared.append(copy)
+			continue
+		if dry_run:
+			removed.append(copy)
 			continue
 		try:
 			copy.unlink()
@@ -585,17 +590,26 @@ def pull_sessions(
 	target_dir: Path,
 	mapper: PathMapper,
 	local_project_path: str,
+	*,
+	dry_run: bool = False,
 ) -> TransferReport:
-	"""Разложить транскрипты проекта под текущую машину."""
+	"""Разложить транскрипты проекта под текущую машину.
+
+	dry_run — ничего не пишется, moved перечисляет то, что было бы разложено.
+	"""
 	moved: list[str] = []
 	skipped: list[tuple[str, str]] = []
 	if not vault_session_dir.is_dir():
 		return TransferReport(moved, skipped)
-	target_dir.mkdir(parents=True, exist_ok=True)
+	if not dry_run:
+		target_dir.mkdir(parents=True, exist_ok=True)
 	for transcript in sorted(vault_session_dir.glob("*.jsonl")):
 		destination = target_dir / transcript.name
 		if destination.exists() and destination.stat().st_mtime >= transcript.stat().st_mtime:
 			skipped.append((transcript.name, "локальная копия не старше"))
+			continue
+		if dry_run:
+			moved.append(transcript.name)
 			continue
 		transform_transcript(
 			transcript,
