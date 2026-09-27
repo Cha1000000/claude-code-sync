@@ -99,6 +99,16 @@ whatever the scope. A file edited in place is never overwritten silently.
 Normally none of them are needed: `SessionStart` pulls, `Stop` and `SessionEnd`
 push.
 
+**`push` sends only what changed here.** For settings, MCP servers, plugins,
+`CLAUDE.md` and host files the machine keeps a snapshot of where it last agreed
+with the vault, so a machine that has not synced for a while never overwrites
+edits made elsewhere. A line *"not sent — the vault has a different version…"*
+is not an error: the vault is newer and this machine did not edit the file (or
+has no snapshot yet); `pull tools` fixes it. The other way round, `pull` does
+not overwrite what was edited here — files, settings, MCP servers — and says
+*"edited here — kept as is"*. To see in advance what would go or come, use
+`push --dry-run` and `pull --dry-run`: they change nothing, here or in the vault.
+
 ## Private sessions
 
 If I say a conversation must not travel to the other machines, that is

@@ -238,6 +238,32 @@ Hooks do the work: `SessionStart` pulls and tells Claude which machine it is on,
 | `/sync-ignore [reason]` | keep this session out of the vault |
 | `/sync-forget [id]` | forget a session everywhere (irreversible) |
 
+## A machine that fell behind rolls nothing back
+
+Every piece of tooling — `settings.json`, MCP servers, the plugin list,
+`CLAUDE.md` and other copied files, host files — keeps a snapshot on each
+machine: the point where it last agreed with the vault. `push` sends only what
+changed **here** since then. What changed only in the vault stays as it is, even
+if this machine has not pulled for weeks; a key changed on both sides goes out
+from here, the same rule `pull` follows. Before the first snapshot exists (the
+first sync with this engine), nothing that differs from the vault is sent.
+
+It holds the other way too: `pull` does not overwrite what you edited here — a
+file, a setting, an MCP server — and says so.
+
+Whatever `push` leaves out, it names: *not sent — the vault has a different
+version…* That is not an error: the vault is newer, and `pull tools` catches
+up. A vault file that no longer parses is never taken for "no file yet" —
+`push` leaves it alone and asks you to fix it by hand.
+
+To see in advance what would go or come, add `--dry-run`: the real command runs
+on a throwaway copy of the vault and changes nothing, here or there.
+
+```bash
+python3 ~/claude-code-sync/bin/ccsync.py push all --dry-run
+python3 ~/claude-code-sync/bin/ccsync.py pull all --dry-run
+```
+
 ## Privacy
 
 Your vault is private, but two things are worth knowing.
