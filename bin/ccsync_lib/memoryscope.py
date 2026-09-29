@@ -219,8 +219,22 @@ def render_local_index(facts: list[Fact], machine: Machine, link_prefix: str = "
 	return "\n".join(lines).rstrip() + "\n\n" + GENERATED_MARKER + "\n"
 
 
+# MEMORY.md грузится в каждую сессию, и Claude Code читает только первые 25 КБ.
+# Строка индекса — указатель на факт, а не его пересказ: подробности живут в файле.
+INDEX_HOOK_MAX = 120
+
+
+def _short_hook(hook: str, limit: int = INDEX_HOOK_MAX) -> str:
+	"""Обрезать хук по границе слова, чтобы индекс не раздувался."""
+	hook = " ".join(hook.split())
+	if len(hook) <= limit:
+		return hook
+	cut = hook[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—-(")
+	return (cut or hook[:limit]) + "…"
+
+
 def _index_line(fact: Fact, link_prefix: str) -> str:
-	hook = fact.display_hook.strip()
+	hook = _short_hook(fact.display_hook)
 	tail = f" — {hook}" if hook else ""
 	return f"- [{fact.display_title}]({link_prefix}{fact.path.name}){tail}"
 
