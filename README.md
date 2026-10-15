@@ -266,6 +266,67 @@ python3 ~/claude-code-sync/bin/ccsync.py push all --dry-run
 python3 ~/claude-code-sync/bin/ccsync.py pull all --dry-run
 ```
 
+## Updating the engine
+
+**The engine does not update itself.** “Use this template” gives you a copy of
+`bin/` as it was that day, and nothing links it to this repository afterwards:
+`/sync-pull` and the hooks only pull from **your** vault. A fix released here
+reaches you only when you carry it over. Do it whenever you want a newer engine —
+and in particular if your vault was created before **15 October 2026**: older
+engines could drop records from a session when two machines had both written to
+it, and refused to push transcripts above 50 MB.
+
+Easiest is to hand it to Claude Code: paste the prompt from
+[BOOTSTRAP](BOOTSTRAP.md#updating-the-engine-in-an-existing-vault). By hand it
+is a clone, a comparison and a copy; run it from the root of your vault
+(`~/claude-code-sync`) in bash or zsh (on native Windows, Git Bash):
+
+```bash
+git status --short                 # start clean: commit or stash what is not about this update
+git pull
+new=$(mktemp -d)
+git clone --depth 1 https://github.com/Cha1000000/claude-code-sync.git "$new"
+
+# 1. See what differs. Anything listed under bin/ that you did not change
+#    yourself is simply the old engine; a file you edited shows up here too.
+for p in bin tools/tests tests; do diff -rq -x __pycache__ "$p" "$new/$p"; done
+for f in setup-hooks.py extras/statusline.py; do diff -q "$f" "$new/$f"; done
+for f in "$new"/tools/commands/sync-*.md; do diff -q "tools/commands/$(basename "$f")" "$f"; done
+
+# 2. Replace the engine. Files that no longer exist in the release go away with the old folder.
+for p in bin tools/tests tests; do rm -rf "$p"; cp -R "$new/$p" "$p"; done
+cp "$new/setup-hooks.py" setup-hooks.py
+cp "$new/extras/statusline.py" extras/statusline.py
+cp "$new"/tools/commands/sync-*.md tools/commands/
+
+# 3. Add the ignore / attribute lines this release needs (only appends, never removes)
+for f in .gitignore .gitattributes; do
+  while IFS= read -r l; do
+    [ -n "$l" ] && ! grep -qxF -- "$l" "$f" 2>/dev/null && printf '%s\n' "$l" >> "$f"
+  done < <(grep -v '^#' "$new/$f")
+done
+rm -rf "$new"
+
+# 4. Check it works here (the rigs run in throwaway directories and touch nothing)
+bash tools/tests/run-all.sh | tail -3
+
+# 5. Commit exactly these paths — sync never commits the engine, see "Limitations"
+git add bin tools/tests tests extras/statusline.py setup-hooks.py tools/commands/sync-*.md .gitignore .gitattributes
+git commit -m "Update ccsync engine"
+git push
+```
+
+Your other machines get it on their next `/sync-pull`; there is nothing to do
+on them. `python3 setup-hooks.py` is safe to run again if a release changes the
+hooks (it says *hooks already in place* when there is nothing to add).
+
+**What this touches, and what it never does:** only the engine — `bin/`, the
+test rigs, `setup-hooks.py`, `extras/statusline.py` and the `sync-*.md` commands.
+Your memory, sessions, skills, settings, the registries, the README and
+BOOTSTRAP in your vault, and any command of your own in `tools/commands/` stay
+as they are. If you changed the engine yourself, step 1 shows it before step 2
+overwrites it: copy your edit aside and re-apply it afterwards.
+
 ## Privacy
 
 Your vault is private, but two things are worth knowing.
@@ -513,6 +574,8 @@ them.
 - **Sync commits only Claude's state.** Edits to the engine itself (`bin/`,
   `tools/tests/`, `docs/`, `README*`, `BOOTSTRAP*`, `.gitignore`) are never swept
   into the automatic `sync from …` commits — commit them yourself.
+- **The engine does not update itself.** Fixes released here reach your vault
+  only when you copy them over — see *Updating the engine*.
 - **Native Windows is supported** (hooks call Python directly, JSON is assembled
   node by node, symlinks fall back to copies), but it has had less mileage than
   Linux and macOS.

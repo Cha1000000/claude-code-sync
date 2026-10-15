@@ -182,6 +182,52 @@ theme, an extra hook), open `settings.json.bak` afterwards, move what you want
 back into `settings.json`, and run `ccsync.py push tools` — from then on your
 machines share one set of settings and local edits survive every pull.
 
+## Updating the engine in an existing vault
+
+The engine in your vault is a copy from the day you created it, and it does not
+update itself (see [README](README.md#updating-the-engine)). To bring it up to
+date, paste this into Claude Code **on one machine** — the others receive the
+result through the vault:
+
+```
+Update the ccsync engine in my vault from the public template. Work step by step
+and show me the result of each one. The vault is ~/claude-code-sync (use the path
+this machine really has: `python3 ~/claude-code-sync/bin/ccsync.py status`).
+
+1. `git -C <vault> status --short` must show nothing that is not about this
+   update. If it does, tell me and wait; do not stash or discard anything.
+   Then `git -C <vault> pull`.
+
+2. Clone https://github.com/Cha1000000/claude-code-sync.git (depth 1) into a
+   temporary directory, outside the vault.
+
+3. Compare these paths between the vault and the clone, and show me what differs:
+   `bin/`, `tools/tests/`, `tests/`, `setup-hooks.py`, `extras/statusline.py`,
+   and only the `tools/commands/sync-*.md` files. Touch nothing else — not the
+   README, BOOTSTRAP, docs, memory, sessions, skills, hooks of mine, other
+   commands. If a file in the vault differs in a way that looks like MY edit
+   rather than an older version of the engine, stop and ask me before
+   overwriting it.
+
+4. After I say yes: replace those paths with the clone's versions (delete files
+   that no longer exist in the clone, inside those paths only). Append to the
+   vault's `.gitignore` and `.gitattributes` any non-comment lines they lack
+   from the clone's; never remove lines.
+
+5. Run `bash tools/tests/run-all.sh` in the vault and show me the totals. If
+   anything fails, do not commit — show me the output.
+
+6. Commit ONLY the paths from step 3 plus `.gitignore` and `.gitattributes`
+   (`git add` them by name, never `-A`) with the message "Update ccsync engine",
+   and push. Then remove the temporary clone.
+
+7. Run `python3 setup-hooks.py` in the vault (it only reports that the hooks are
+   already in place, or adds missing ones), restart Claude Code, and check that
+   a new session starts with a [ccsync] Machine: ... block.
+
+On my other machines I will just run /sync-pull.
+```
+
 ## Per-OS notes
 
 **Windows.** Both native and WSL are supported; choose by where your code lives,

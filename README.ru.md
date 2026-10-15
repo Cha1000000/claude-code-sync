@@ -261,6 +261,67 @@ python3 ~/claude-code-sync/bin/ccsync.py push all --dry-run
 python3 ~/claude-code-sync/bin/ccsync.py pull all --dry-run
 ```
 
+## Обновление движка
+
+**Движок сам не обновляется.** «Use this template» отдаёт копию `bin/` на день
+создания, и больше с этим репозиторием она никак не связана: `/sync-pull` и хуки
+тянут только из **вашего** хранилища. Исправление, выпущенное здесь, доходит до
+вас, только когда вы перенесёте его сами. Делайте это, когда нужен свежий
+движок, — и обязательно, если хранилище создано до **15 октября 2026**: старые
+движки могли потерять записи сессии, если в ней успели поработать две машины, и
+отказывались отправлять транскрипты больше 50 МБ.
+
+Проще всего поручить это Claude Code: вставьте промт из
+[BOOTSTRAP](BOOTSTRAP.ru.md#обновление-движка-в-готовом-хранилище). Вручную это
+клон, сравнение и копирование; запускайте из корня своего хранилища
+(`~/claude-code-sync`) в bash или zsh (в нативной Windows — Git Bash):
+
+```bash
+git status --short                 # начните с чистого дерева: лишнее закоммитьте или уберите
+git pull
+new=$(mktemp -d)
+git clone --depth 1 https://github.com/Cha1000000/claude-code-sync.git "$new"
+
+# 1. Что отличается. Всё, что вы сами не меняли, — просто старый движок;
+#    но правленый вами файл здесь тоже появится.
+for p in bin tools/tests tests; do diff -rq -x __pycache__ "$p" "$new/$p"; done
+for f in setup-hooks.py extras/statusline.py; do diff -q "$f" "$new/$f"; done
+for f in "$new"/tools/commands/sync-*.md; do diff -q "tools/commands/$(basename "$f")" "$f"; done
+
+# 2. Заменить движок. Файлы, которых в выпуске больше нет, уходят вместе со старой папкой.
+for p in bin tools/tests tests; do rm -rf "$p"; cp -R "$new/$p" "$p"; done
+cp "$new/setup-hooks.py" setup-hooks.py
+cp "$new/extras/statusline.py" extras/statusline.py
+cp "$new"/tools/commands/sync-*.md tools/commands/
+
+# 3. Дописать строки для .gitignore и .gitattributes, нужные этому выпуску (только дописывает, не удаляет)
+for f in .gitignore .gitattributes; do
+  while IFS= read -r l; do
+    [ -n "$l" ] && ! grep -qxF -- "$l" "$f" 2>/dev/null && printf '%s\n' "$l" >> "$f"
+  done < <(grep -v '^#' "$new/$f")
+done
+rm -rf "$new"
+
+# 4. Проверить, что работает (стенды идут во временных каталогах и ничего не трогают)
+bash tools/tests/run-all.sh | tail -3
+
+# 5. Закоммитить именно эти пути — синхронизация движок не коммитит, см. «Ограничения»
+git add bin tools/tests tests extras/statusline.py setup-hooks.py tools/commands/sync-*.md .gitignore .gitattributes
+git commit -m "Update ccsync engine"
+git push
+```
+
+Остальные машины получат это при следующем `/sync-pull`, делать там ничего не
+нужно. `python3 setup-hooks.py` можно запустить ещё раз, если выпуск меняет
+хуки (когда добавлять нечего, он напишет, что хуки уже на месте).
+
+**Что это трогает, а что никогда:** только движок — `bin/`, стенды,
+`setup-hooks.py`, `extras/statusline.py` и команды `sync-*.md`. Память, сессии,
+скиллы, настройки, реестры, README и BOOTSTRAP в вашем хранилище и ваши
+собственные команды в `tools/commands/` остаются как есть. Если вы правили движок
+сами, шаг 1 покажет это до того, как шаг 2 перезапишет: сохраните правку в
+стороне и наложите заново.
+
 ## Приватность
 
 Хранилище приватное, но две вещи знать стоит.
@@ -504,6 +565,8 @@ Claude Code после восстановления сессии. Остальн
 - **Синхронизация коммитит только состояние Claude.** Правки самого движка
   (`bin/`, `tools/tests/`, `docs/`, `README*`, `BOOTSTRAP*`, `.gitignore`) в
   автоматические коммиты `sync from …` не попадают — коммитьте их сами.
+- **Движок сам не обновляется.** Исправления, выпущенные здесь, попадают в ваше
+  хранилище, только когда вы их перенесёте, — см. «Обновление движка».
 - **Нативная Windows поддержана** (хуки зовут Python напрямую, JSON собирается по
   узлам, симлинки при недоступности заменяются копиями), но обкатана меньше, чем
   Linux и macOS.
