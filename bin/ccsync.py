@@ -778,7 +778,14 @@ def _pull_sessions(context: Context, args) -> None:
 		local_path, is_bound = _resolve_or_bind(context, key, args)
 		target = sessions.local_session_dir(context.config_dir, local_path)
 		if not context.dry_run:
-			Path(local_path).mkdir(parents=True, exist_ok=True)
+			try:
+				Path(local_path).mkdir(parents=True, exist_ok=True)
+			except OSError as error:
+				# Каталог проекта может лежать на недоступном маунте (облачный диск
+				# отвалился). Транскрипты от него не зависят — не роняем pull остальных.
+				_notice(context, tr("[ccsync] каталог проекта {key} недоступен ({path}): {error} — "
+									"сессии разложены, но открыть проект пока нельзя",
+									key=key, path=local_path, error=error))
 		report = sessions.pull_sessions(directory, target, mapper, local_path,
 										dry_run=context.dry_run, seen=seen,
 										seen_prefix=f"{key}/", backup_dir=backup_dir)

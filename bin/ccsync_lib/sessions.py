@@ -640,7 +640,43 @@ def _index(lines: list[str]) -> tuple[list[tuple[str, str | None]], dict[str, st
 	return pairs, by_uuid
 
 
+# Названия сессии. `/resume` берёт их из начала и конца файла, а не из всей
+# середины, поэтому после слияния действующее название должно стоять в хвосте.
+TITLE_TYPES = ("custom-title", "agent-name", "ai-title")
+TITLE_TAIL_LINES = 50
+
+
+def _titles_to_tail(lines: list[str]) -> list[str]:
+	"""Продублировать действующие названия в конец, если они ушли вглубь файла.
+
+	Копия, а не перенос: прежние записи остаются как были («без потерь»), а при
+	чтении побеждает последняя. Повторное слияние второй раз ничего не допишет:
+	название уже в хвосте.
+	"""
+	latest: dict[str, tuple[int, str]] = {}
+	for position, line in enumerate(lines):
+		for kind in TITLE_TYPES:
+			if f'"{kind}"' in line[:40]:
+				try:
+					record = json.loads(line)
+				except json.JSONDecodeError:
+					break
+				if isinstance(record, dict) and record.get("type") == kind:
+					latest[kind] = (position, line)
+				break
+	border = len(lines) - TITLE_TAIL_LINES
+	stale = [line for position, line in latest.values() if position < border]
+	return lines + stale if stale else lines
+
+
 def merge_lines(first: list[str], second: list[str]) -> MergeResult:
+	result = _merge_lines(first, second)
+	if result.kind in ("second-has-all", "merged"):
+		result.lines = _titles_to_tail(result.lines)
+	return result
+
+
+def _merge_lines(first: list[str], second: list[str]) -> MergeResult:
 	"""Слить две версии одного транскрипта без потерь.
 
 	`first` — версия, которой при совпадении `uuid` отдаётся предпочтение: на

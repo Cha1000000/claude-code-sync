@@ -297,5 +297,6 @@
   "[ccsync] ВНИМАНИЕ: сессия {id} не уезжает в хранилище с {since} — {size} МБ, после сжатия {slimmed} МБ (порог {limit} МБ); поможет /compact в ней или {command} slim": "[ccsync] WARNING: session {id} has not been synced to the vault since {since} — {size} MB, {slimmed} MB after slimming (limit {limit} MB); run /compact in it or {command} slim",
   "[ccsync] ВНИМАНИЕ: эта сессия на {machine} не уезжает в хранилище с {since} — здесь открыта устаревшая копия. Продолжать лучше там.": "[ccsync] WARNING: on {machine} this session has not been synced to the vault since {since} — this is an outdated copy. Better continue there.",
   "В сессию {id} дописали, пока она сжималась, — не трогаю. Закрой её и повтори.": "Session {id} was written to while it was being slimmed — leaving it alone. Close it and retry.",
-  "[ccsync] правки движка не коммитятся синхронизацией ({count}: {files}) — закоммить их сам": "[ccsync] engine changes are not committed by sync ({count}: {files}) — commit them yourself"
+  "[ccsync] правки движка не коммитятся синхронизацией ({count}: {files}) — закоммить их сам": "[ccsync] engine changes are not committed by sync ({count}: {files}) — commit them yourself",
+  "[ccsync] каталог проекта {key} недоступен ({path}): {error} — сессии разложены, но открыть проект пока нельзя": "[ccsync] project directory {key} is unavailable ({path}): {error} — sessions were placed, but the project cannot be opened yet"
 }
