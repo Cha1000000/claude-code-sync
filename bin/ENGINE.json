@@ -40,6 +40,7 @@
     "tools/commands/sync-push.md": "94d54744f7bff0099a7bbd60d90b2ef310ab47987095cc3a2903397edc377868",
     "tools/commands/sync-secrets.md": "436aa045c2695655e5c262b2f3a0ff0520412eb60df76b66cab02e6c0a720191",
     "tools/commands/sync-status.md": "fabd5e495adb6448a453a2c97ab601440ec4cedcd894c92bc8590a8c5540b518",
+    "tools/commands/sync-update.md": "7663cbe22f6e9fc674e5b9f1a78a3a85b7c701553598ce54a78f630a57c1dfba",
     "tools/tests/copied-files.sh": "926e6e838931c30d2a42b36c27466ad40b759188fe42d627d5386014542f3139",
     "tools/tests/dry-run.sh": "a2f44d40adb814b48d3b1e6409348b8c94ad17d69cc96accc11abf062cee283f",
     "tools/tests/engine-update.sh": "2ad912bb3234d61856ad812a44e3af705e17c6fa97e3b4984ce46d9682ff2d72",
@@ -61,7 +62,7 @@
     ".gitattributes"
   ],
   "min_python": "3.9",
-  "release": null,
+  "release": "v2026.10.15",
   "roots": [
     "bin",
     "tools/tests",
