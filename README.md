@@ -11,6 +11,12 @@ required.
 
 *[Русская версия](README.ru.md) · [Adding another machine](BOOTSTRAP.md)*
 
+> **Made your copy before 15 October 2026?** Its engine has no way to update itself and
+> still carries the bug that could lose a session on sync. Install the
+> [latest release](https://github.com/Cha1000000/claude-code-sync/releases/latest) once by
+> hand — [three commands](#a-vault-older-than-the-first-release-one-time) — and after that
+> it updates with `/sync-update`.
+
 ![One conversation continuing on another machine](docs/how-it-works.svg)
 
 ---
