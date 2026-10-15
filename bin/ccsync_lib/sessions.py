@@ -12,24 +12,41 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
+import time
 import uuid as uuid_module
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import slim
 from .paths import PathMapper, slug_for
 from .redact import Redactor
 
-# GitHub отклоняет файлы больше 100 МБ. Держим запас и не тащим гиганты.
-DEFAULT_MAX_BYTES = 50 * 1024 * 1024
+# GitHub отклоняет файлы больше 100 МБ. Порог — для копии после сжатия
+# (см. slim.py): 10 МБ запаса до жёсткого предела.
+DEFAULT_MAX_BYTES = 90 * 1024 * 1024
+
+# Исходник больше этого даже не читаем: разбор такого файла в память сам по
+# себе опасен, а влезть в порог после сжатия у него шансов нет.
+HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 
 # Поля записи, в которых лежит именно путь, а не свободный текст.
 PATH_FIELDS = ("cwd",)
+
+# Временные файлы атомарной записи. В .gitignore хранилища — на случай, если
+# процесс убили раньше, чем он успел убрать за собой.
+TEMP_SUFFIX = ".ccsync-tmp"
 
 
 @dataclass
 class TransferReport:
 	moved: list[str]
 	skipped: list[tuple[str, str]]  # (файл, причина)
+	merged: list[str] = field(default_factory=list)       # слиты две разошедшиеся версии
+	kept_local: list[str] = field(default_factory=list)   # локальная полнее — не тронута
+	sizes: dict[str, tuple[int, int]] = field(default_factory=dict)  # имя → (было, стало)
 
 	def summary(self) -> str:
 		parts = []
@@ -562,6 +579,189 @@ def is_empty_transcript(transcript: Path) -> bool:
 	return True
 
 
+# --- слияние двух версий одного транскрипта ---------------------------------
+
+@dataclass
+class MergeResult:
+	"""Чем две версии сессии отличаются и что из этого получилось.
+
+	kind:
+	  "same"        — записи одни и те же;
+	  "first-has-all"  — в первой есть всё, что во второй (и, может, больше);
+	  "second-has-all" — наоборот;
+	  "merged"      — у каждой есть свои записи, текст собран из обеих.
+	"""
+
+	kind: str
+	lines: list[str]
+	first_fresher: bool = False   # у первой версии есть своя ветка новее всего во второй
+
+	@property
+	def text(self) -> str:
+		return "".join(line + "\n" for line in self.lines)
+
+
+def _line_uuid(line: str) -> str | None:
+	if '"uuid"' not in line:
+		return None
+	try:
+		record = json.loads(line)
+	except json.JSONDecodeError:
+		return None
+	value = record.get("uuid") if isinstance(record, dict) else None
+	return value if isinstance(value, str) and value else None
+
+
+def _line_time(line: str) -> str:
+	try:
+		record = json.loads(line)
+	except json.JSONDecodeError:
+		return ""
+	value = record.get("timestamp") if isinstance(record, dict) else None
+	return value if isinstance(value, str) else ""
+
+
+def _canonical(line: str) -> str:
+	"""Запись без uuid в виде, не зависящем от форматирования.
+
+	Строки, прошедшие через хранилище, сериализованы заново (с пробелами после
+	запятых), а локальные — компактно; сравнивать их как строки нельзя, иначе
+	каждое слияние дописывает такие записи дублями.
+	"""
+	try:
+		return json.dumps(json.loads(line), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+	except ValueError:
+		return line
+
+
+def _index(lines: list[str]) -> tuple[list[tuple[str, str | None]], dict[str, str]]:
+	pairs = [(line, _line_uuid(line)) for line in lines if line.strip()]
+	by_uuid = {uuid: line for line, uuid in pairs if uuid}
+	return pairs, by_uuid
+
+
+def merge_lines(first: list[str], second: list[str]) -> MergeResult:
+	"""Слить две версии одного транскрипта без потерь.
+
+	`first` — версия, которой при совпадении `uuid` отдаётся предпочтение: на
+	своей машине это полная локальная копия, а копия из хранилища могла пройти
+	сжатие (slim.py) и потерять картинки. Сравнение идёт по составу записей
+	(`uuid`), а не по времени изменения файла: mtime файла в git — это время
+	checkout, и он ничего не говорит о том, где разговор длиннее. Именно так
+	15.10.2026 ноутбучная копия на 13 829 записей заменила локальную на 22 045.
+
+	При расхождении в конец ставится ветка с более свежей репликой: `--resume`
+	читает разговор от последней строки файла, и открываться должна последняя
+	по времени работа. Вторая ветка остаётся в файле целиком (её покажет
+	`ccsync branches`).
+	"""
+	first_pairs, first_by_uuid = _index(first)
+	second_pairs, second_by_uuid = _index(second)
+	first_ids, second_ids = set(first_by_uuid), set(second_by_uuid)
+
+	def prefer_first(pairs):
+		return [first_by_uuid.get(uuid, line) if uuid else line for line, uuid in pairs]
+
+	if second_ids <= first_ids:
+		kind = "same" if first_ids == second_ids else "first-has-all"
+		return MergeResult(kind, [line for line, _ in first_pairs])
+	if first_ids <= second_ids:
+		# Записи без uuid (заголовки, сводки, снимки файлов для /rewind) есть
+		# только у первой версии: копия из хранилища прошла сжатие. Терять их
+		# нельзя. Ставим в начало, чтобы для «последний побеждает» (заголовок
+		# сессии) верх брали более свежие записи второй версии.
+		seen_second = {_canonical(line) for line, uuid in second_pairs if not uuid}
+		own = [line for line, uuid in first_pairs if not uuid and _canonical(line) not in seen_second]
+		return MergeResult("second-has-all", own + prefer_first(second_pairs))
+
+	own_first = max((_line_time(first_by_uuid[u]) for u in first_ids - second_ids), default="")
+	own_second = max((_line_time(second_by_uuid[u]) for u in second_ids - first_ids), default="")
+	fresher = own_first > max((_line_time(line) for line in second_by_uuid.values()), default="")
+	if own_first >= own_second:
+		older, newer, older_ids = prefer_first(second_pairs), first_pairs, second_ids
+	else:
+		older, newer, older_ids = [line for line, _ in first_pairs], second_pairs, first_ids
+	present = {_canonical(line) for line in older if not _line_uuid(line)}
+	tail = [line for line, uuid in newer
+			if (uuid and uuid not in older_ids) or (not uuid and _canonical(line) not in present)]
+	return MergeResult("merged", older + tail, fresher)
+
+
+def _read_lines(path: Path) -> list[str]:
+	with path.open(encoding="utf-8", errors="replace") as handle:
+		return [line.rstrip("\n") for line in handle if line.strip()]
+
+
+def _stamp(path: Path) -> tuple[int, int]:
+	stat = path.stat()
+	return stat.st_size, stat.st_mtime_ns
+
+
+def write_atomic(path: Path, text: str, *, expect: tuple[int, int] | None = None) -> bool:
+	"""Записать через временный файл: прерванный хук не оставит половину файла.
+
+	Имя временного файла уникальное — Stop и SessionEnd могут писать одну
+	сессию одновременно, — а при любой ошибке он удаляется: в хранилище
+	`git add -A` иначе закоммитил бы огрызок.
+
+	expect — (размер, mtime) цели на момент чтения. Если файл с тех пор
+	изменился (в открытую сессию дописали реплику), ничего не пишем и
+	возвращаем False: замена выбросила бы дописанное.
+	"""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=TEMP_SUFFIX)
+	temporary = Path(name)
+	try:
+		with os.fdopen(handle, "w", encoding="utf-8") as stream:
+			stream.write(text)
+		if expect is not None and path.exists() and _stamp(path) != expect:
+			return False
+		os.replace(temporary, path)
+		return True
+	finally:
+		temporary.unlink(missing_ok=True)
+
+
+# --- снимок копий в хранилище -----------------------------------------------
+
+class SeenVaultFiles:
+	"""Какую версию каждой сессии в хранилище эта машина уже разобрала.
+
+	Хранится размер и mtime файла хранилища на момент разбора. Пока они те же,
+	сравнивать заново нечего; `git pull` меняет mtime только у файлов, которые
+	действительно изменились. Без этого снимка каждый старт сессии читал бы
+	сотни мегабайт транскриптов, а у хука на это 25 секунд.
+	"""
+
+	def __init__(self, path: Path) -> None:
+		self.path = path
+		try:
+			data = json.loads(path.read_text(encoding="utf-8"))
+		except (OSError, ValueError):
+			data = {}
+		self.data: dict[str, list[int]] = data if isinstance(data, dict) else {}
+
+	@staticmethod
+	def _stamp(vault_file: Path) -> list[int]:
+		stat = vault_file.stat()
+		return [stat.st_size, stat.st_mtime_ns]
+
+	def unchanged(self, key: str, vault_file: Path) -> bool:
+		return self.data.get(key) == self._stamp(vault_file)
+
+	def known(self, key: str) -> bool:
+		return key in self.data
+
+	def remember(self, key: str, vault_file: Path) -> None:
+		self.data[key] = self._stamp(vault_file)
+		self.save()
+
+	def save(self) -> None:
+		# Параллельный запуск может затереть чужую строку снимка — это не
+		# страшно: следующий pull просто сверит тот файл заново.
+		write_atomic(self.path, json.dumps(self.data, ensure_ascii=False, indent=1))
+
+
 def push_session(
 	transcript: Path,
 	vault_session_dir: Path,
@@ -569,20 +769,64 @@ def push_session(
 	*,
 	max_bytes: int = DEFAULT_MAX_BYTES,
 	redactor: Redactor | None = None,
+	seen: SeenVaultFiles | None = None,
+	seen_key: str | None = None,
 ) -> TransferReport:
-	"""Выгрузить один транскрипт в репозиторий."""
+	"""Выгрузить один транскрипт в репозиторий.
+
+	Копия для хранилища сжимается (slim.py): картинки и служебные записи не
+	едут никогда, остальные ступени — пока копия больше порога. Если в
+	хранилище уже лежат записи, которых здесь нет (другая машина продолжила
+	сессию, а эта ещё не подтянула), они не стираются, а сливаются со здешними.
+	"""
 	if not transcript.exists():
 		return TransferReport([], [(str(transcript), "файл не найден")])
 	size = transcript.stat().st_size
-	if size > max_bytes:
-		reason = f"{size / 1048576:.0f} МБ — больше порога {max_bytes / 1048576:.0f} МБ, пропущен"
-		return TransferReport([], [(transcript.name, reason)])
+	if size > HARD_LIMIT_BYTES:
+		reason = f"{size / 1048576:.0f} МБ — слишком большой даже для сжатия, пропущен"
+		return TransferReport([], [(transcript.name, reason)], sizes={transcript.name: (size, size)})
 	if is_empty_transcript(transcript):
 		return TransferReport([], [(transcript.name, "пустая сессия, отправлять нечего")])
+
+	convert = mapper.tokenize
+	if redactor is not None:
+		def convert(value: str) -> str:  # noqa: F811 — сознательная обёртка
+			return redactor.mask(mapper.tokenize(value))
+	with transcript.open(encoding="utf-8", errors="replace") as source:
+		# Картинки — до трёх четвертей веса транскрипта, а в копию они не едут
+		# никогда. Вырезаем их сразу при чтении, чтобы не держать в памяти.
+		ours = [_convert_line(slim.strip_images_line(line.rstrip("\n")), convert, None)
+				for line in source if line.strip()]
+
 	destination = vault_session_dir / transcript.name
-	transform_transcript(transcript, destination, mapper, mode="tokenize",
-						 cwd_override=None, redactor=redactor)
-	return TransferReport([transcript.name], [])
+	result = TransferReport([], [])
+	complete = True   # в копии хранилища нет ничего, чего нет здесь
+	if destination.exists():
+		# Сначала слияние, потом сжатие: иначе начало, срезанное по /compact,
+		# вернулось бы из прежней копии в хранилище и раздуло её снова.
+		merge = merge_lines(ours, _read_lines(destination))
+		ours = merge.lines
+		complete = merge.kind in ("same", "first-has-all")
+		if merge.kind == "merged":
+			result.merged.append(transcript.name)
+	records, _ = slim.slim_records(slim.parse_lines(ours), target=max_bytes)
+	del ours
+	text = slim.dump_records(records)
+	del records
+	final = len(text.encode("utf-8"))
+	result.sizes[transcript.name] = (size, final)
+	if final > max_bytes:
+		reason = (f"{size / 1048576:.0f} МБ, после сжатия {final / 1048576:.0f} МБ — "
+				  f"больше порога {max_bytes / 1048576:.0f} МБ, не отправлен")
+		result.skipped.append((transcript.name, reason))
+		return result
+	write_atomic(destination, text)
+	if seen is not None and seen_key and complete:
+		# Свою же выгрузку при следующем pull разбирать незачем. Но если в неё
+		# влились чужие записи, которых здесь нет, pull должен их забрать.
+		seen.remember(seen_key, destination)
+	result.moved.append(transcript.name)
+	return result
 
 
 def pull_sessions(
@@ -592,31 +836,74 @@ def pull_sessions(
 	local_project_path: str,
 	*,
 	dry_run: bool = False,
+	seen: SeenVaultFiles | None = None,
+	seen_prefix: str = "",
+	backup_dir: Path | None = None,
 ) -> TransferReport:
-	"""Разложить транскрипты проекта под текущую машину.
+	"""Разложить транскрипты проекта под текущую машину, ничего не теряя.
+
+	Локальный транскрипт заменяется, только если в нём нет ничего, чего нет во
+	входящем. Если у каждой версии есть свои записи, они сливаются, а прежний
+	локальный файл перед этим копируется в backup_dir.
 
 	dry_run — ничего не пишется, moved перечисляет то, что было бы разложено.
 	"""
-	moved: list[str] = []
-	skipped: list[tuple[str, str]] = []
+	report = TransferReport([], [])
 	if not vault_session_dir.is_dir():
-		return TransferReport(moved, skipped)
+		return report
 	if not dry_run:
 		target_dir.mkdir(parents=True, exist_ok=True)
 	for transcript in sorted(vault_session_dir.glob("*.jsonl")):
 		destination = target_dir / transcript.name
-		if destination.exists() and destination.stat().st_mtime >= transcript.stat().st_mtime:
-			skipped.append((transcript.name, "локальная копия не старше"))
-			continue
+		key = seen_prefix + transcript.name
+		if destination.exists():
+			if seen is not None and seen.unchanged(key, transcript):
+				report.skipped.append((transcript.name, "в хранилище без изменений"))
+				continue
+			if (seen is None or not seen.known(key)) and \
+					destination.stat().st_mtime >= transcript.stat().st_mtime:
+				# Первая встреча и локальная копия свежее: прежнее правило, оно
+				# безопасно — локальное не трогаем. Дальше сверяемся по снимку.
+				report.skipped.append((transcript.name, "локальная копия не старше"))
+				if seen is not None and not dry_run:
+					seen.remember(key, transcript)
+				continue
 		if dry_run:
-			moved.append(transcript.name)
+			report.moved.append(transcript.name)
 			continue
-		transform_transcript(
-			transcript,
-			destination,
-			mapper,
-			mode="detokenize",
-			cwd_override=local_project_path,
-		)
-		moved.append(transcript.name)
-	return TransferReport(moved, skipped)
+		incoming = destination.with_name(f".{destination.name}.ccsync-incoming")
+		try:
+			transform_transcript(transcript, incoming, mapper, mode="detokenize",
+								 cwd_override=local_project_path)
+			if not destination.exists():
+				os.replace(incoming, destination)
+				report.moved.append(transcript.name)
+			else:
+				stamp = _stamp(destination)
+				merge = merge_lines(_read_lines(destination), _read_lines(incoming))
+				if merge.kind in ("same", "first-has-all"):
+					report.kept_local.append(transcript.name)
+				else:
+					if merge.kind == "merged" and backup_dir is not None:
+						# Ветки разошлись. Слияние ничего не выбрасывает, но копию
+						# прежнего файла на всякий случай оставляем.
+						backup_dir.mkdir(parents=True, exist_ok=True)
+						shutil.copy2(destination, backup_dir / destination.name)
+					if not write_atomic(destination, merge.text, expect=stamp):
+						# Пока сливали, в сессию дописали — она открыта. Снимок не
+						# запоминаем: следующий pull попробует снова.
+						report.skipped.append((transcript.name, "сессия изменилась во время слияния — позже"))
+						continue
+					report.moved.append(transcript.name)
+					if merge.kind == "merged":
+						report.merged.append(transcript.name)
+		except OSError as error:
+			# В Windows файл открытой сессии бывает заблокирован. Одна сессия не
+			# должна останавливать разбор остальных.
+			report.skipped.append((transcript.name, f"не записан: {error}"))
+			continue
+		finally:
+			incoming.unlink(missing_ok=True)
+		if seen is not None:
+			seen.remember(key, transcript)
+	return report

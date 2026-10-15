@@ -100,11 +100,19 @@ def run_detached(args: list[str]) -> None:
 		pass
 
 
-def emit_session_context() -> None:
-	"""Напечатать блок «на какой ты машине» — он попадает Клоду в контекст."""
+def emit_session_context(payload: dict) -> None:
+	"""Напечатать блок «на какой ты машине» — он попадает Клоду в контекст.
+
+	Id открываемой сессии нужен, чтобы предупредить, если у неё на другой
+	машине остались неотправленные записи: тогда здесь открыта устаревшая копия.
+	"""
+	command = [python_executable(), str(SESSION_CONTEXT)]
+	session_id = str(payload.get("session_id") or "").strip()
+	if session_id:
+		command += ["--session", session_id]
 	try:
 		result = subprocess.run(
-			[python_executable(), str(SESSION_CONTEXT)],
+			command,
 			timeout=20,
 			capture_output=True,
 			text=True,
@@ -171,7 +179,7 @@ def main(argv: list[str]) -> int:
 	if action == "session-start":
 		# Добиваем случай, когда сессию прибили жёстко и SessionEnd не отработал.
 		sweep_forgotten(skip_current=True)
-		emit_session_context()
+		emit_session_context(payload)
 	return 0
 
 

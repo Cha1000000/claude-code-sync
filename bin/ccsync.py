@@ -30,13 +30,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ccsync_lib import (conflicts, hostfiles, identity, ignore, memoryscope,
-                        migrate_registry, redact, scopes, secrets, sessions, tools)
+from ccsync_lib import (conflicts, held, hostfiles, identity, ignore, memoryscope,
+                        migrate_registry, redact, scopes, secrets, sessions, slim, tools)
 from ccsync_lib.gitutil import Git
 from ccsync_lib.i18n import tr
 from ccsync_lib.paths import PathMapper, slug_for
 from ccsync_lib.vault import (RESERVED_SESSION_DIRS, Vault, find_candidates,
-                              project_key_from_path)
+                              machine_file_stem, project_key_from_path)
+
+SEEN_VAULT_FILES = "ccsync-sessions-seen.json"
 
 DEBOUNCE_STAMP = ".ccsync-last-push"
 MEMORY_LINK_NAME = "memory"
@@ -173,7 +175,7 @@ def cmd_push(context: Context, args) -> int:
 		return 0
 
 	message = f"sync from {machine.machine_id}: " + ", ".join(done)
-	commit = context.git.commit_all(message)
+	commit = _commit_sync(context, message)
 	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	if context.dry_run:
 		return 0
@@ -185,6 +187,24 @@ def cmd_push(context: Context, args) -> int:
 	_stamp_push(context)
 	context.say(tr("[ccsync] отправлено"))
 	return 0
+
+
+# Код и тексты самого движка. Синхронизация их не коммитит: это работа над
+# ccsync, а не состояние Claude, и в git она попадает только осознанно. Раньше
+# здесь был `git add -A`, и хук Stop каждые пять минут забирал незаконченные
+# правки движка в коммиты «sync from …» — и сразу отправлял их на GitHub.
+ENGINE_PATHS = ("bin", "tools/tests", "docs", "plans", "README.md", "BOOTSTRAP.md",
+				"release-public.py", ".gitignore", ".gitattributes")
+
+
+def _commit_sync(context: Context, message: str):
+	commit = context.git.commit_all(message, exclude=ENGINE_PATHS)
+	pending = context.git.uncommitted(*ENGINE_PATHS)
+	if pending:
+		context.say(tr("[ccsync] правки движка не коммитятся синхронизацией ({count}: {files}) — "
+					   "закоммить их сам", count=len(pending), files=", ".join(pending[:3])
+					   + (" …" if len(pending) > 3 else "")))
+	return commit
 
 
 def _run_in_sandbox(context: Context, args, command, *, outgoing: bool) -> int:
@@ -411,11 +431,44 @@ def _push_session(context: Context, args, mapper: PathMapper) -> list[str]:
 		mapper,
 		max_bytes=args.max_mb * 1024 * 1024,
 		redactor=redactor,
+		seen=None if context.dry_run else _seen_vault_files(context),
+		seen_key=f"{key}/{transcript.name}",
 	)
+	stem = machine_file_stem(machine.machine_id)
+	done: list[str] = []
 	for name, reason in report.skipped:
-		print(tr("[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}",
-				 name=name, reason=reason), file=sys.stderr)
-	return [f"session {key}/{transcript.stem[:8]}"] if report.moved else []
+		message = tr("[ccsync] ВНИМАНИЕ: {name} не отправлен — {reason}", name=name, reason=reason)
+		print(message, file=sys.stderr)
+		if name in report.sizes and not context.dry_run:
+			# Хук молчит — запоминаем, чтобы сказать при следующем старте сессии
+			# здесь и предупредить другие машины, открывающие эту сессию.
+			size, slimmed = report.sizes[name]
+			if held.mark(context.config_dir, context.root, stem, machine.machine_id,
+						 session_id, project=key, size=size, slimmed=slimmed):
+				done.append(f"held {key}/{transcript.stem[:8]}")
+	if report.merged:
+		context.say(tr("[ccsync] сессия {id}: в хранилище были чужие записи — слиты со здешними",
+					   id=session_id[:8]))
+	if report.moved:
+		if not context.dry_run and held.clear(context.config_dir, context.root, stem,
+											  machine.machine_id, session_id):
+			_notice(context, tr("[ccsync] сессия {id} снова уезжает в хранилище",
+								id=session_id[:8]))
+		return [f"session {key}/{transcript.stem[:8]}"]
+	return done
+
+
+def _seen_vault_files(context: Context) -> sessions.SeenVaultFiles:
+	return sessions.SeenVaultFiles(context.config_dir / SEEN_VAULT_FILES)
+
+
+def _notice(context: Context, message: str) -> None:
+	"""Сказать сейчас, а если вывод уходит в никуда (хук), — при старте следующей сессии."""
+	if context.quiet:
+		if not context.dry_run:
+			held.add_notice(context.config_dir, message)
+	else:
+		context.say(message)
 
 
 def _project_path_for_slug(context: Context, slug: str, fallback: str) -> str:
@@ -715,6 +768,9 @@ def _pull_sessions(context: Context, args) -> None:
 	_apply_tombstones(context)
 	projects_root = sessions.projects_root(context.config_dir)
 	stale = 0
+	seen = None if context.dry_run else _seen_vault_files(context)
+	backup_dir = context.config_dir / "backups" / f"pull-merge-{time.strftime('%Y%m%d-%H%M%S')}"
+	alive = ignore.current_session_id()
 	for directory in sorted(context.vault.sessions_dir.glob("*")):
 		if not directory.is_dir() or directory.name in RESERVED_SESSION_DIRS:
 			continue
@@ -724,7 +780,17 @@ def _pull_sessions(context: Context, args) -> None:
 		if not context.dry_run:
 			Path(local_path).mkdir(parents=True, exist_ok=True)
 		report = sessions.pull_sessions(directory, target, mapper, local_path,
-										dry_run=context.dry_run)
+										dry_run=context.dry_run, seen=seen,
+										seen_prefix=f"{key}/", backup_dir=backup_dir)
+		for name in report.merged:
+			_notice(context, tr("[ccsync] сессия {id} продолжалась на двух машинах врозь — "
+								"версии слиты, ничего не потеряно; ветки: {command} branches "
+								"--session {id_full}", id=name[:8], command=_ccsync_hint(),
+								id_full=Path(name).stem))
+		if alive and f"{alive}.jsonl" in report.moved:
+			_notice(context, tr("[ccsync] открытая сейчас сессия {id} обновилась из хранилища — "
+								"если не видно последних реплик, перезапусти её через /resume",
+								id=alive[:8]))
 		if report.moved:
 			# Спрашиваем не mapper: он собран до цикла и про привязку, сделанную
 			# только что автопоиском, ещё не знает — вышло бы «найден и привязан»
@@ -739,7 +805,6 @@ def _pull_sessions(context: Context, args) -> None:
 		# ~/claude-sessions/<ключ>. После привязки прежняя раскладка осталась бы
 		# рядом, и одна сессия двоилась бы в /resume — со старой, оборванной
 		# копией. Убираем такие хвосты, но только когда ничего не теряем.
-		alive = ignore.current_session_id()
 		for transcript in sorted(directory.glob("*.jsonl")):
 			removed, spared = sessions.drop_stale_copies(
 				projects_root, transcript.stem, target / transcript.name,
@@ -998,7 +1063,7 @@ def cmd_forget(context: Context, args) -> int:
 			done.append(tr("локальных файлов удалено: {count}", count=removed))
 
 	message = f"forget session {key}/{session_id[:8]} (from {machine.machine_id})"
-	commit = context.git.commit_all(message)
+	commit = _commit_sync(context, message)
 	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	push = context.git.push()
 	if not push.ok:
@@ -1526,7 +1591,7 @@ def _forget_machine(context: Context, machine, target_id: str) -> int:
 		print(tr("У машины {id} не оказалось файлов реестра.", id=target_id),
 			  file=sys.stderr)
 		return 1
-	commit = context.git.commit_all(f"forget machine {target_id}")
+	commit = _commit_sync(context, f"forget machine {target_id}")
 	context.say(f"[ccsync] {commit.out or commit.err or tr('коммит создан')}")
 	push = context.git.push()
 	print(tr("Машина {id} списана: {files}",
@@ -1611,6 +1676,107 @@ def cmd_split(context: Context, args) -> int:
 			print(f"  «{result.preview}»")
 	print(tr("Открыть: claude --resume <id> из каталога этого проекта"))
 	print(tr("Отдать остальным машинам: {command} push session", command=_ccsync_hint()))
+	return 0
+
+
+# Сессия, в которую писали совсем недавно, может быть открыта в соседнем
+# терминале: переписывать её файл под Claude Code нельзя.
+RECENTLY_WRITTEN_SECONDS = 10 * 60
+
+
+def _refuse_live(transcript: Path, session_id: str, force: bool) -> str | None:
+	if session_id == ignore.current_session_id():
+		return tr("Это текущая сессия: Claude Code пишет в неё прямо сейчас. Закрой её и повтори.")
+	if not force and time.time() - transcript.stat().st_mtime < RECENTLY_WRITTEN_SECONDS:
+		return tr("В сессию {id} писали меньше 10 минут назад — возможно, она открыта. "
+				  "Закрой её и повтори (или --force).", id=session_id[:8])
+	return None
+
+
+def cmd_restore_session(context: Context, args) -> int:
+	"""Вернуть транскрипт сессии из файла: снапшота, резервной копии, архива slim.
+
+	Отдельная команда, а не ручной cp: она сверяет, что файл — та же сессия,
+	всегда кладёт текущую версию в резервную копию и пишет атомарно. Под неё
+	можно завести узкое разрешающее правило в настройках Claude Code.
+	"""
+	context.require_machine()
+	source = Path(args.source).expanduser()
+	if not source.is_file():
+		print(tr("Файл {path} не найден.", path=source), file=sys.stderr)
+		return 1
+	lines = slim.read_maybe_gzip(source)
+	ids = {r.get("sessionId") for r in slim.parse_lines(lines)
+		   if isinstance(r, dict) and r.get("sessionId")}
+	if ids != {args.session}:
+		print(tr("В {path} не транскрипт сессии {id} (нашлись: {found}) — не трогаю.",
+				 path=source, id=args.session[:8],
+				 found=", ".join(sorted(i[:8] for i in ids)) or "—"), file=sys.stderr)
+		return 1
+	root = sessions.projects_root(context.config_dir)
+	target = ignore.find_local_transcript(root, args.session)
+	if target is None:
+		if not args.project:
+			print(tr("Сессии {id} на этой машине нет — укажи --project <путь проекта>.",
+					 id=args.session[:8]), file=sys.stderr)
+			return 1
+		target = sessions.local_session_dir(context.config_dir, args.project) / f"{args.session}.jsonl"
+	else:
+		problem = _refuse_live(target, args.session, args.force)
+		if problem:
+			print(problem, file=sys.stderr)
+			return 2
+	if args.dry_run:
+		print(tr("--dry-run: {path} ← {source}, записей {count}",
+				 path=target, source=source, count=len(lines)))
+		return 0
+	backup = context.config_dir / "backups" / f"restore-{args.session[:8]}-{time.strftime('%Y%m%d-%H%M%S')}"
+	if target.exists():
+		backup.mkdir(parents=True, exist_ok=True)
+		shutil.copy2(target, backup / target.name)
+	sessions.write_atomic(target, "".join(line + "\n" for line in lines))
+	print(tr("Восстановлено: {path} — записей {count}", path=target, count=len(lines)))
+	if target.exists() and backup.exists():
+		print(tr("Прежняя версия: {path}", path=backup / target.name))
+	return 0
+
+
+def cmd_slim(context: Context, args) -> int:
+	"""Сжать локальный транскрипт теми же ступенями, что и копию для хранилища.
+
+	Полный оригинал не пропадает: он уходит в gzip-архив в
+	~/.claude/session-archive и никуда не синхронизируется.
+	"""
+	context.require_machine()
+	root = sessions.projects_root(context.config_dir)
+	target = ignore.find_local_transcript(root, args.session)
+	if target is None:
+		print(tr("Сессия {id} на этой машине не найдена.", id=args.session[:8]), file=sys.stderr)
+		return 1
+	problem = _refuse_live(target, args.session, args.force)
+	if problem:
+		print(problem, file=sys.stderr)
+		return 2
+	stamp = (target.stat().st_size, target.stat().st_mtime_ns)
+	with target.open(encoding="utf-8", errors="replace") as handle:
+		records, report = slim.slim_records(slim.parse_lines(handle),
+											target=args.max_mb * 1024 * 1024)
+	mb = lambda value: f"{value / 1048576:.0f}"  # noqa: E731
+	steps = " → ".join(f"{stage} {mb(report.after[stage])}" for stage in report.applied)
+	print(tr("{id}: {before} МБ → {steps} МБ", id=args.session[:8], before=mb(report.before),
+			 steps=steps))
+	if report.cut_at:
+		print(tr("  начало срезано по /compact от {when}", when=report.cut_at))
+	if args.dry_run:
+		print(tr("--dry-run: ничего не записано."))
+		return 0
+	archive_dir = context.config_dir / slim.ARCHIVE_DIR
+	archive = slim.archive_original(target, archive_dir)
+	if not sessions.write_atomic(target, slim.dump_records(records), expect=stamp):
+		print(tr("В сессию {id} дописали, пока она сжималась, — не трогаю. Закрой её и повтори.",
+				 id=args.session[:8]), file=sys.stderr)
+		return 2
+	print(tr("Оригинал: {path}", path=archive))
 	return 0
 
 
@@ -1722,7 +1888,8 @@ def build_parser() -> argparse.ArgumentParser:
 		sub.add_argument("--no-autobind", action="store_true", help=tr("не привязывать проекты автоматически"))
 		sub.add_argument("--from-hook", action="store_true", help=tr("взять данные сессии из stdin (хук)"))
 		sub.add_argument("--debounce", type=int, default=0, help=tr("не чаще, чем раз в N секунд"))
-		sub.add_argument("--max-mb", type=int, default=50, help=tr("порог размера транскрипта, МБ"))
+		sub.add_argument("--max-mb", type=int, default=sessions.DEFAULT_MAX_BYTES // 1048576,
+						 help=tr("порог размера транскрипта после сжатия, МБ"))
 		sub.set_defaults(func=func)
 
 	ignore_cmd = subparsers.add_parser("ignore", help=tr("не синхронизировать эту сессию"))
@@ -1767,6 +1934,27 @@ def build_parser() -> argparse.ArgumentParser:
 	split_cmd.add_argument("session", help=tr("id сессии"))
 	split_cmd.add_argument("--dry-run", action="store_true", help=tr("ничего не менять"))
 	split_cmd.set_defaults(func=cmd_split)
+
+	restore_cmd = subparsers.add_parser(
+		"restore-session", help=tr("вернуть транскрипт сессии из файла (с резервной копией)"))
+	restore_cmd.add_argument("session", help=tr("id сессии"))
+	restore_cmd.add_argument("--from", dest="source", required=True,
+							 help=tr("файл транскрипта (.jsonl или .jsonl.gz)"))
+	restore_cmd.add_argument("--project", help=tr("путь проекта, если сессии здесь ещё нет"))
+	restore_cmd.add_argument("--force", action="store_true",
+							 help=tr("не ждать 10 минут после последней записи"))
+	restore_cmd.add_argument("--dry-run", action="store_true", help=tr("ничего не менять"))
+	restore_cmd.set_defaults(func=cmd_restore_session)
+
+	slim_cmd = subparsers.add_parser(
+		"slim", help=tr("сжать локальный транскрипт (оригинал — в архив)"))
+	slim_cmd.add_argument("session", help=tr("id сессии"))
+	slim_cmd.add_argument("--max-mb", type=int, default=sessions.DEFAULT_MAX_BYTES // 1048576,
+						  help=tr("до какого размера сжимать, МБ"))
+	slim_cmd.add_argument("--force", action="store_true",
+						  help=tr("не ждать 10 минут после последней записи"))
+	slim_cmd.add_argument("--dry-run", action="store_true", help=tr("только показать"))
+	slim_cmd.set_defaults(func=cmd_slim)
 
 	adopt = subparsers.add_parser("adopt", help=tr("перевести локальные каталоги на симлинки"))
 	adopt.set_defaults(func=cmd_adopt)

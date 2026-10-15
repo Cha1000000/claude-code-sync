@@ -87,12 +87,19 @@ class Git:
 		result = self.run("show", f"{revision}:{path}")
 		return result.out if result.ok else None
 
-	def commit_all(self, message: str) -> GitResult:
-		self.run("add", "-A")
-		staged = self.run("diff", "--cached", "--name-only").out
+	def commit_all(self, message: str, *, exclude: tuple[str, ...] = ()) -> GitResult:
+		"""Закоммитить всё, кроме путей из exclude (их правки остаются как есть)."""
+		spec = [".", *(f":(exclude){path}" for path in exclude)]
+		self.run("add", "-A", "--", *spec)
+		staged = self.run("diff", "--cached", "--name-only", "--", *spec).out
 		if not staged:
 			return GitResult(0, "нечего коммитить", "")
-		return self.run("commit", "-m", message)
+		return self.run("commit", "-m", message, "--", *spec)
+
+	def uncommitted(self, *paths: str) -> list[str]:
+		"""Изменённые и новые файлы в этих путях, ещё не закоммиченные."""
+		result = self.run("status", "--porcelain", "--untracked-files=all", "--", *paths)
+		return [line[3:] for line in result.out.splitlines() if line.strip()] if result.ok else []
 
 	def commit_paths(self, message: str, *paths: str) -> GitResult:
 		"""Закоммитить только указанные пути, не забирая остальные правки."""

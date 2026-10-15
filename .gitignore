@@ -18,3 +18,7 @@ memory/index.md
 # Кэш скиллов из аккаунта claude.ai (anthropic-skills:*). Claude Code сам
 # скачивает его на каждой машине — возить через git незачем, только раздувает историю.
 tools/skills/synced/
+
+# Временные файлы атомарной записи ccsync — если процесс убили посреди записи.
+*.ccsync-tmp
+*.ccsync-incoming

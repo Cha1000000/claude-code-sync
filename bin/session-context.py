@@ -75,6 +75,8 @@ def main() -> int:
 			lines.append(tr("[ccsync] Другие машины: {names}",
 							names=", ".join(sorted(others))))
 
+		lines.extend(_sync_warnings(vault, machine, _session_arg()))
+
 		print("\n".join(lines))
 	except Exception as error:  # хук не имеет права ломать запуск сессии
 		print(f"[ccsync] контекст машины недоступен: {error}", file=sys.stderr)  # noqa: перевод недоступен, если импорт упал
@@ -109,6 +111,53 @@ def _unusable_mcp(vault, machine) -> list[tuple[str, str]]:
 		return broken
 	except Exception:
 		return []
+
+
+def _session_arg() -> str:
+	if "--session" in sys.argv:
+		index = sys.argv.index("--session")
+		if index + 1 < len(sys.argv):
+			return sys.argv[index + 1]
+	return ""
+
+
+def _sync_warnings(vault, machine, session_id: str) -> list[str]:
+	"""Что фоновая синхронизация не смогла сказать сама.
+
+	Хуки запускают движок молча, поэтому неотправленные сессии и слияния
+	становятся видны только здесь. Самое важное — открытая сейчас сессия, у
+	которой на другой машине есть неотправленные записи: 14.10.2026 ноутбук
+	открыл именно такую копию, отставшую на шесть дней, и никто не предупредил.
+	"""
+	try:
+		from ccsync_lib import held, identity
+		from ccsync_lib.i18n import tr
+		from ccsync_lib.vault import machine_file_stem
+
+		config = identity.claude_config_dir()
+		lines = list(held.take_notices(config))
+		for sid, entry in sorted(held.load_local(config).items()):
+			lines.append(tr("[ccsync] ВНИМАНИЕ: сессия {id} не уезжает в хранилище с {since} — "
+							"{size} МБ, после сжатия {slimmed} МБ (порог {limit} МБ); "
+							"поможет /compact в ней или {command} slim",
+							id=sid[:8], since=str(entry.get("since", "?"))[:10],
+							size=int(entry.get("size", 0)) // 1048576,
+							slimmed=int(entry.get("slimmed", 0)) // 1048576,
+							limit=_limit_mb(), command="ccsync"))
+		if session_id:
+			own = machine_file_stem(machine.machine_id)
+			for other, entry in held.held_elsewhere(vault.root, own, session_id):
+				lines.append(tr("[ccsync] ВНИМАНИЕ: эта сессия на {machine} не уезжает в хранилище "
+								"с {since} — здесь открыта устаревшая копия. Продолжать лучше там.",
+								machine=other, since=str(entry.get("since", "?"))[:10]))
+		return lines
+	except Exception:
+		return []
+
+
+def _limit_mb() -> int:
+	from ccsync_lib import sessions
+	return sessions.DEFAULT_MAX_BYTES // 1048576
 
 
 def _same_path(left: str, right: str) -> bool:

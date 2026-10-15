@@ -92,6 +92,16 @@ def build(d):
     with_extras = width == 0 or width >= 85
 
     segments = []
+    path_line = ""
+
+    cwd = d.get("workspace", {}).get("current_dir") or d.get("cwd")
+    if cwd:
+        home = os.path.expanduser("~")
+        if cwd == home or cwd.startswith(home + os.sep):
+            cwd = "~" + cwd[len(home):]
+        path_line = f"{DIM}{cwd}{RESET}"
+    else:
+        path_line = ""
 
     model = d.get("model", {}).get("display_name") or "?"
     head = f"{BOLD}{CYAN}{model}{RESET}"
@@ -117,7 +127,9 @@ def build(d):
         if cost is not None:
             segments.append(f"{DIM}${cost:.2f}{RESET}")
 
-    return SEP.join(segments)
+    line = SEP.join(segments)
+    # Путь на отдельной строке ниже: длинный путь не должен сдвигать остальное.
+    return f"{line}\n{path_line}" if path_line else line
 
 
 def main():
