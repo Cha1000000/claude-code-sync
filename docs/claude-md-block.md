@@ -109,6 +109,12 @@ not overwrite what was edited here — files, settings, MCP servers — and says
 *"edited here — kept as is"*. To see in advance what would go or come, use
 `push --dry-run` and `pull --dry-run`: they change nothing, here or in the vault.
 
+**A warning about a session that does not reach the vault** comes at session
+start. *"…this is an outdated copy. Better continue there."* means this very
+session has unsent turns on another machine: tell me before working on, so the
+work does not fork. For a session of this machine, `/compact` in it or
+`ccsync.py slim <id>` gets it under the limit.
+
 ## Private sessions
 
 If I say a conversation must not travel to the other machines, that is

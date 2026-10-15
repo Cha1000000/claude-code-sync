@@ -409,6 +409,45 @@ opening words, so you can recognise the one you want. `split` moves each branch
 into a session of its own — after that every one of them opens whole and as
 itself. The original file is kept in `~/.claude/backups/`.
 
+## Large sessions and recovery
+
+**`pull` merges, it never replaces.** Two copies of a session are compared by the
+`uuid` of their records, not by file times — after a `git checkout` the vault
+copy always looks newer, whatever it holds. If the incoming copy has nothing new,
+the local transcript is left alone. If both have records of their own, they are
+merged, the branch with the most recent turn goes last (that is the one
+`--resume` opens), and the previous local file is kept in
+`~/.claude/backups/pull-merge-<time>/`. `push` does the same in the other
+direction: records another machine already sent are never wiped out of the
+vault. A transcript Claude Code is writing to while the merge runs is left for
+the next `pull`.
+
+**The vault gets a slimmed copy; your transcript stays whole.** Screenshots are
+often three quarters of a transcript's weight, so the copy that goes to the
+vault always drops images (a short marker takes their place) and service
+records. If it is still above 90 MB (`--max-mb`), long tool outputs are
+shortened, and as a last resort the copy starts at the earliest `/compact` that
+makes it fit. The conversation itself — every turn and answer — stays, and
+`--resume` on the other machine reads it.
+
+**A session that cannot be sent is not silent.** It is announced at the next
+session start on this machine, and the other machines are warned when they open
+their outdated copy of it — *"this is an outdated copy. Better continue there."*
+
+```bash
+python3 ~/claude-code-sync/bin/ccsync.py slim <id>                       # slim the local transcript itself
+python3 ~/claude-code-sync/bin/ccsync.py restore-session <id> --from <file>   # put a transcript back
+```
+
+`slim` applies the same steps to the local file — for a session so heavy that
+`--resume` itself slows down. The full original goes to
+`~/.claude/session-archive/<id>-<time>.jsonl.gz` and never leaves the machine.
+`restore-session` takes a `.jsonl` or `.jsonl.gz` (a backup, a filesystem
+snapshot, a `slim` archive), checks that it really is that session, keeps the
+current version in `~/.claude/backups/` and writes atomically. Both refuse a
+session that was written to in the last ten minutes, since it may still be open
+(`--force` overrides).
+
 ## Language
 
 The engine picks its language from `CCSYNC_LANG`, falling back to your locale
@@ -430,8 +469,8 @@ you and the tool.
 
 ## Verifying
 
-Three test rigs cover the engine — private sessions, registries diverging between
-machines, and session keys. Each one builds its own `$HOME` and its own bare
+Test rigs cover the engine — private sessions, registries diverging between
+machines, session keys, merging sessions without losing anything. Each one builds its own `$HOME` and its own bare
 repository, so they never touch your real setup:
 
 ```bash
@@ -468,8 +507,12 @@ them.
   over timestamps — so one merged branch is read and the other stays in the file
   unreachable. See *Branches* below for what the engine does about it.
 - **It is git, not realtime.** Expect a delay measured in minutes.
-- **Transcripts over 50 MB are skipped** with a warning rather than silently —
-  GitHub rejects files above 100 MB.
+- **A transcript that stays above 90 MB even after slimming is not sent** —
+  GitHub rejects files above 100 MB. You are told about it (see *Large sessions
+  and recovery*); `/compact` in that session or `ccsync.py slim` helps.
+- **Sync commits only Claude's state.** Edits to the engine itself (`bin/`,
+  `tools/tests/`, `docs/`, `README*`, `BOOTSTRAP*`, `.gitignore`) are never swept
+  into the automatic `sync from …` commits — commit them yourself.
 - **Native Windows is supported** (hooks call Python directly, JSON is assembled
   node by node, symlinks fall back to copies), but it has had less mileage than
   Linux and macOS.
