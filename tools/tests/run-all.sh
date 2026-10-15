@@ -2,6 +2,9 @@
 # Прогнать все стенды ccsync. Ничего на машине не трогают: каждый поднимает
 # собственный $HOME и собственный bare-репозиторий во временном каталоге.
 set -u
+# Стенды рассчитаны на запуск без терминала: из консоли pull спросил бы путь проекта
+# и завис, а вывод стенда спрятан.
+exec </dev/null
 cd "$(dirname "$0")"
 total_ok=0; total_fail=0
 for stand in private-sessions.sh registries.sh session-keys.sh session-chain.sh host-files.sh copied-files.sh tools-merge.sh dry-run.sh secrets.sh first-join.sh session-merge.sh engine-update.sh; do
