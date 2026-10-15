@@ -311,6 +311,50 @@ check "новый файл движка не закоммичен" "?? bin/ccsyn
 	"$(cd "$STAND/m1vault" && git status --porcelain --untracked-files=all -- bin/ccsync_lib/draft.py)"
 check "об этом сказано, пути целые" "1" "$(echo "$out" | grep 'правки движка не коммитятся' | grep -c '(2: bin/ccsync.py, bin/ccsync_lib/draft.py)')"
 
+echo "ТЕСТ 12 — после слияния название сессии стоит в хвосте файла"
+# /resume читает название из начала и конца файла. Слияние ставит «чужую» ветку
+# в конец, и название, записанное раньше, уходило на мегабайты вглубь.
+res=$(python3 -I - "$SRC" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from ccsync_lib.sessions import merge_lines
+
+def rec(uuid, parent, day):
+    return json.dumps({"type": "user", "uuid": uuid, "parentUuid": parent,
+                       "timestamp": f"2026-09-{day:02d}T10:00:00.000Z"})
+
+title = json.dumps({"type": "custom-title", "customTitle": "Название", "sessionId": "s"})
+agent = json.dumps({"type": "agent-name", "agentName": "Название", "sessionId": "s"})
+base = [rec("a0", None, 1), title, agent] + [rec(f"a{i}", f"a{i-1}", 1) for i in range(1, 200)]
+other = base[:60] + [rec("b0", "a40", 5)]          # вторая машина продолжила врозь
+
+def in_tail(lines, kind):
+    return sum(1 for l in lines[-50:] if f'"{kind}"' in l[:40])
+
+merged = merge_lines(base, other)
+again = merge_lines(merged.lines, other)
+same = merge_lines(base, list(base))
+shallow = [rec("c0", None, 1)] + [rec(f"c{i}", f"c{i-1}", 1) for i in range(1, 30)] + [title]
+shallow_merged = merge_lines(shallow, [rec("d0", "c3", 5)])
+
+print("kind", merged.kind)
+print("custom", in_tail(merged.lines, "custom-title"))
+print("agent", in_tail(merged.lines, "agent-name"))
+print("grow", len(merged.lines) - len(base) - 1)        # +1 — своя запись b0
+print("twice", len(again.lines) - len(merged.lines))
+print("same", len(same.lines) - len(base))
+print("shallow", len(shallow_merged.lines) - len(shallow) - 1)
+PY
+)
+val() { echo "$res" | awk -v k="$1" '$1==k {print $2}'; }
+check "слияние состоялось (ветки разошлись)" "merged" "$(val kind)"
+check "custom-title продублирован в хвост" "1" "$(val custom)"
+check "agent-name продублирован в хвост" "1" "$(val agent)"
+check "добавлено ровно два названия, прежние записи на месте" "2" "$(val grow)"
+check "повторное слияние ничего не дописывает" "0" "$(val twice)"
+check "без расхождения файл не меняется" "0" "$(val same)"
+check "название, уже стоящее в хвосте, не дублируется" "0" "$(val shallow)"
+
 echo
 echo "ИТОГО: успешно $ok, провалено $fail"
 exit $fail
