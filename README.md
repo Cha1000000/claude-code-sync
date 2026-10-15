@@ -237,6 +237,7 @@ Hooks do the work: `SessionStart` pulls and tells Claude which machine it is on,
 | `/sync-mcp [name] [--here\|--not-here\|--global]` | MCP servers and their scopes |
 | `/sync-host [add <path>] [<key>] [--here\|--not-here\|--global]` | host scripts and systemd units |
 | `/sync-secrets [add <path> \| add-recipient]` | secrets that travel encrypted, and who can decrypt them |
+| `/sync-update [mode …\|rollback]` | update the engine from a signed release |
 | `/sync-ignore [reason]` | keep this session out of the vault |
 | `/sync-forget [id]` | forget a session everywhere (irreversible) |
 
@@ -268,64 +269,71 @@ python3 ~/claude-code-sync/bin/ccsync.py pull all --dry-run
 
 ## Updating the engine
 
-**The engine does not update itself.** “Use this template” gives you a copy of
-`bin/` as it was that day, and nothing links it to this repository afterwards:
-`/sync-pull` and the hooks only pull from **your** vault. A fix released here
-reaches you only when you carry it over. Do it whenever you want a newer engine —
-and in particular if your vault was created before **15 October 2026**: older
-engines could drop records from a session when two machines had both written to
-it, and refused to push transcripts above 50 MB.
+The engine in your vault (`bin/`) used to be a copy from the day you pressed
+“Use this template”, with nothing linking it to this repository. Since the first signed release it can update itself on your say-so.
 
-Easiest is to hand it to Claude Code: paste the prompt from
-[BOOTSTRAP](BOOTSTRAP.md#updating-the-engine-in-an-existing-vault). By hand it
-is a clone, a comparison and a copy; run it from the root of your vault
-(`~/claude-code-sync`) in bash or zsh (on native Windows, Git Bash):
+**How it works.** Every release is an annotated git tag `vYYYY.MM.DD`, signed with
+a dedicated SSH key. At the start of a session the engine asks this repository —
+at most once a day, with `git ls-remote --tags`, a five-second timeout, silent if
+the network is down — whether there is a newer tag. If there is, Claude tells you
+once, and you decide:
 
-```bash
-git status --short                 # start clean: commit or stash what is not about this update
-git pull
-new=$(mktemp -d)
-git clone --depth 1 https://github.com/Cha1000000/claude-code-sync.git "$new"
-
-# 1. See what differs. Anything listed under bin/ that you did not change
-#    yourself is simply the old engine; a file you edited shows up here too.
-for p in bin tools/tests tests; do diff -rq -x __pycache__ "$p" "$new/$p"; done
-for f in setup-hooks.py extras/statusline.py; do diff -q "$f" "$new/$f"; done
-for f in "$new"/tools/commands/sync-*.md; do diff -q "tools/commands/$(basename "$f")" "$f"; done
-
-# 2. Replace the engine. Files that no longer exist in the release go away with the old folder.
-for p in bin tools/tests tests; do rm -rf "$p"; cp -R "$new/$p" "$p"; done
-cp "$new/setup-hooks.py" setup-hooks.py
-cp "$new/extras/statusline.py" extras/statusline.py
-cp "$new"/tools/commands/sync-*.md tools/commands/
-
-# 3. Add the ignore / attribute lines this release needs (only appends, never removes)
-for f in .gitignore .gitattributes; do
-  while IFS= read -r l; do
-    [ -n "$l" ] && ! grep -qxF -- "$l" "$f" 2>/dev/null && printf '%s\n' "$l" >> "$f"
-  done < <(grep -v '^#' "$new/$f")
-done
-rm -rf "$new"
-
-# 4. Check it works here (the rigs run in throwaway directories and touch nothing)
-bash tools/tests/run-all.sh | tail -3
-
-# 5. Commit exactly these paths — sync never commits the engine, see "Limitations"
-git add bin tools/tests tests extras/statusline.py setup-hooks.py tools/commands/sync-*.md .gitignore .gitattributes
-git commit -m "Update ccsync engine"
-git push
+```
+/sync-update          # shows the plan; installs after your yes
 ```
 
-Your other machines get it on their next `/sync-pull`; there is nothing to do
-on them. `python3 setup-hooks.py` is safe to run again if a release changes the
-hooks (it says *hooks already in place* when there is nothing to add).
+or by hand: `python3 ~/claude-code-sync/bin/ccsync.py engine update --dry-run`, and
+the same with `--yes` to apply. The engine
 
-**What this touches, and what it never does:** only the engine — `bin/`, the
-test rigs, `setup-hooks.py`, `extras/statusline.py` and the `sync-*.md` commands.
-Your memory, sessions, skills, settings, the registries, the README and
-BOOTSTRAP in your vault, and any command of your own in `tools/commands/` stay
-as they are. If you changed the engine yourself, step 1 shows it before step 2
-overwrites it: copy your edit aside and re-apply it afterwards.
+- downloads the tag and checks its signature against the key shipped in the engine
+  you **already** have (a tampered tag does not install; `--allow-unverified` never
+  overrides a signature that does not match);
+- compares every file with the manifest of the installed release (`bin/ENGINE.json`).
+  **A file you edited is left alone** and named in the report;
+- backs up whatever it replaces to `~/.claude/backups/engine-<time>/`, writes
+  atomically while hooks stand still, and checks that the new code starts — if not,
+  the old engine is put back and the release is marked bad on this machine;
+- commits only the paths it wrote (never `bin/` wholesale) and pushes, so your other
+  machines get the new engine with an ordinary `/sync-pull`.
+
+`engine rollback` puts the previous version back (`--list` shows the backups),
+`engine status` shows the installed release and which files differ from it.
+
+**Modes** — `ccsync.py engine mode <notify|auto|off>`, one choice for all your
+machines (it travels with `push tools`): `notify` is the default; `auto` installs a
+release by itself, but only when the signature matches the installed key and nothing
+you edited is in the way, and tells you afterwards; `off` never contacts GitHub.
+
+**What this touches, and what it never does:** only the engine — `bin/`, the test
+rigs, `setup-hooks.py`, `extras/statusline.py`, the `sync-*.md` commands, and it
+appends missing lines to `.gitignore` / `.gitattributes`. Your memory, sessions,
+skills, settings, hooks in `tools/hooks/`, the README and BOOTSTRAP in your vault and
+any command of your own stay as they are.
+
+### A vault older than the first release (one time)
+
+Such an engine has no `engine` command, so install the first release from a clone —
+with the clone's own engine:
+
+```bash
+git clone --depth 1 --branch <latest tag from the Releases page> \
+    https://github.com/Cha1000000/claude-code-sync.git /tmp/ccsync-release
+python3 /tmp/ccsync-release/bin/ccsync.py --vault ~/claude-code-sync \
+    engine update --source /tmp/ccsync-release --adopt --dry-run     # the plan
+python3 /tmp/ccsync-release/bin/ccsync.py --vault ~/claude-code-sync \
+    engine update --source /tmp/ccsync-release --adopt --yes
+rm -rf /tmp/ccsync-release
+```
+
+Without a manifest there is no way to tell your edit from an outdated copy, so
+`--adopt` takes the release version of **every** engine file; what it replaces,
+edits included, goes to the backup first. Everything above about what is touched
+still holds. Or paste the prompt from
+[BOOTSTRAP](BOOTSTRAP.md#updating-the-engine-in-an-existing-vault) into Claude Code.
+
+**Privacy of the check:** the only thing the daily check sends is an ordinary git
+request to github.com, so GitHub sees your IP address, as with any `git fetch`.
+No telemetry, nothing else leaves the machine. `engine mode off` stops it.
 
 ## Privacy
 
@@ -574,8 +582,9 @@ them.
 - **Sync commits only Claude's state.** Edits to the engine itself (`bin/`,
   `tools/tests/`, `docs/`, `README*`, `BOOTSTRAP*`, `.gitignore`) are never swept
   into the automatic `sync from …` commits — commit them yourself.
-- **The engine does not update itself.** Fixes released here reach your vault
-  only when you copy them over — see *Updating the engine*.
+- **The engine updates on your say-so, not behind your back** (unless you pick
+  `auto`): a daily check tells you about a release, `/sync-update` installs it —
+  see *Updating the engine*.
 - **Native Windows is supported** (hooks call Python directly, JSON is assembled
   node by node, symlinks fall back to copies), but it has had less mileage than
   Linux and macOS.
