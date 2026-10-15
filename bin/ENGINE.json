@@ -17,7 +17,7 @@
     "bin/ccsync_lib/migrate_registry.py": "58e3381e96a1cd3567b1f129238ae601f52dc732691f6d77222208edfb55b973",
     "bin/ccsync_lib/paths.py": "c73677873e1cce90c65aad1837c3c98e7b783519801463274fbae525e002a538",
     "bin/ccsync_lib/redact.py": "5dc00df9d6f4403ef8dc1661eee3740b00cefa68e9fa77645d22a1ff68f50a3e",
-    "bin/ccsync_lib/release-signers": "73c8336dd19e690269721fcb71e6c96dc0b90a5c5ab6a9838c0bd4c956076a88",
+    "bin/ccsync_lib/release-signers": "fc546e93a6508a57cb5aade51729afc875a6741bdda4249250b512e7fbe10328",
     "bin/ccsync_lib/scopes.py": "808e4cbaf763844e9b3627c46b6091a63ee5ed3ca7d8ec3e71be124caef2b84e",
     "bin/ccsync_lib/secrets.py": "7e18d52c611954d6469dc7aeee2f148ef0a17e8356b4459b48a9b059a6673ff5",
     "bin/ccsync_lib/sessions.py": "d1d06f3269ce564511a711ab452ee45a8b537ca1f87c943a65529290d5984c53",
