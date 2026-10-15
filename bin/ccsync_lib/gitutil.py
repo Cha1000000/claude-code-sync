@@ -99,7 +99,10 @@ class Git:
 	def uncommitted(self, *paths: str) -> list[str]:
 		"""Изменённые и новые файлы в этих путях, ещё не закоммиченные."""
 		result = self.run("status", "--porcelain", "--untracked-files=all", "--", *paths)
-		return [line[3:] for line in result.out.splitlines() if line.strip()] if result.ok else []
+		# Вывод run() обрезан по краям, поэтому у первой строки « M путь» нет
+		# ведущего пробела — отрезать фиксированные три символа нельзя.
+		return [line.split(None, 1)[1] for line in result.out.splitlines()
+				if len(line.split(None, 1)) == 2] if result.ok else []
 
 	def commit_paths(self, message: str, *paths: str) -> GitResult:
 		"""Закоммитить только указанные пути, не забирая остальные правки."""

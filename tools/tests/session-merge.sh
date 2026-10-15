@@ -250,6 +250,15 @@ check "merged: запись без uuid в другом форматирован
 t2 = json.dumps({'type': 'custom-title', 'customTitle': 'x'})
 a = json.dumps({'uuid': 'a'}); b = json.dumps({'uuid': 'b'})
 print(sum('custom' in l for l in sessions.merge_lines([a, t1], [b, t2]).lines))")"
+check "картинки вырезаются в любом поле: toolUseResult-список MCP, attachment.prompt" "3 0" \
+	"$(python3 -c "
+import json, sys; sys.path.insert(0, '$SRC')
+from ccsync_lib import slim
+img = {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'iVBOR'}}
+rec = [{'type': 'user', 'message': {'content': [img]}, 'toolUseResult': [img]},
+       {'type': 'attachment', 'attachment': {'prompt': [{'type': 'text', 'text': 'x'}, img]}}]
+n = slim.strip_images(rec)
+print(n, json.dumps(rec).count('base64'))")"
 check "write_atomic не пишет поверх дописанного и не мусорит" "False old 0" \
 	"$(py "p = Path('$STAND/atomic.txt'); p.write_text('old')
 stamp = (p.stat().st_size, p.stat().st_mtime_ns)
@@ -300,7 +309,7 @@ check "правка движка не закоммичена" "M bin/ccsync.py" 
 	"$(cd "$STAND/m1vault" && git status --porcelain -- bin/ccsync.py | sed 's/^ //')"
 check "новый файл движка не закоммичен" "?? bin/ccsync_lib/draft.py" \
 	"$(cd "$STAND/m1vault" && git status --porcelain --untracked-files=all -- bin/ccsync_lib/draft.py)"
-check "об этом сказано" "1" "$(echo "$out" | grep -c 'правки движка не коммитятся')"
+check "об этом сказано, пути целые" "1" "$(echo "$out" | grep 'правки движка не коммитятся' | grep -c '(2: bin/ccsync.py, bin/ccsync_lib/draft.py)')"
 
 echo
 echo "ИТОГО: успешно $ok, провалено $fail"

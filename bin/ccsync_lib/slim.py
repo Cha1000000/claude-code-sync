@@ -104,13 +104,15 @@ def _older_than(record: dict, cutoff: datetime | None) -> bool:
 
 def _strip_images_in(node):
 	"""Заменить base64-картинки текстовой пометкой. Возвращает (узел, сколько заменено)."""
+	# Узел без картинок возвращается тем же объектом: обход идёт по каждой
+	# записи транскрипта, и копировать всё подряд — удвоить память.
 	if isinstance(node, list):
 		out, count = [], 0
 		for item in node:
 			item, found = _strip_images_in(item)
 			out.append(item)
 			count += found
-		return out, count
+		return (out, count) if count else (node, 0)
 	if isinstance(node, dict):
 		source = node.get("source")
 		if node.get("type") == "image" and isinstance(source, dict) and source.get("type") == "base64":
@@ -120,7 +122,7 @@ def _strip_images_in(node):
 			value, found = _strip_images_in(value)
 			out[key] = value
 			count += found
-		return out, count
+		return (out, count) if count else (node, 0)
 	return node, 0
 
 
@@ -130,13 +132,10 @@ def strip_images(records: list, *, cutoff: datetime | None = None) -> int:
 	for index, record in enumerate(records):
 		if not isinstance(record, dict) or not _older_than(record, cutoff):
 			continue
-		message = record.get("message")
-		found = 0
-		if isinstance(message, dict) and isinstance(message.get("content"), list):
-			content, found = _strip_images_in(message["content"])
-			if found:
-				record = dict(record)
-				record["message"] = dict(message, content=content)
+		# Картинки бывают не только в message.content: MCP-инструменты (скриншот
+		# браузера) кладут список блоков в toolUseResult, вставленная в очередь
+		# картинка лежит в attachment.prompt. Поэтому обходим запись целиком.
+		record, found = _strip_images_in(record)
 		result = record.get("toolUseResult")
 		# Дубль для интерфейса: у Read картинки лежит в toolUseResult.file.base64.
 		if isinstance(result, dict) and result.get("type") == "image" and isinstance(result.get("file"), dict):
