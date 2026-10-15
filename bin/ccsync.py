@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ccsync_lib import (conflicts, held, hostfiles, identity, ignore, memoryscope,
+from ccsync_lib import (conflicts, engine, held, hostfiles, identity, ignore, memoryscope,
                         migrate_registry, redact, scopes, secrets, sessions, slim, tools)
 from ccsync_lib.gitutil import Git
 from ccsync_lib.i18n import tr
@@ -194,7 +194,7 @@ def cmd_push(context: Context, args) -> int:
 # здесь был `git add -A`, и хук Stop каждые пять минут забирал незаконченные
 # правки движка в коммиты «sync from …» — и сразу отправлял их на GitHub.
 ENGINE_PATHS = ("bin", "tools/tests", "docs", "plans", "README.md", "BOOTSTRAP.md",
-				"release-public.py", ".gitignore", ".gitattributes")
+				"release-public.py", "release-tests", ".gitignore", ".gitattributes")
 
 
 def _commit_sync(context: Context, message: str):
@@ -1787,6 +1787,11 @@ def cmd_slim(context: Context, args) -> int:
 	return 0
 
 
+def cmd_engine(context: Context, args) -> int:
+	"""Обновление движка из выпуска публичного репозитория."""
+	return engine.run(context, args)
+
+
 def cmd_adopt(context: Context, args) -> int:
 	"""Перенести локальные каталоги в репозиторий и заменить их симлинками."""
 	machine = context.require_machine()
@@ -1962,6 +1967,31 @@ def build_parser() -> argparse.ArgumentParser:
 						  help=tr("не ждать 10 минут после последней записи"))
 	slim_cmd.add_argument("--dry-run", action="store_true", help=tr("только показать"))
 	slim_cmd.set_defaults(func=cmd_slim)
+
+	engine_cmd = subparsers.add_parser(
+		"engine", help=tr("обновление самого движка из выпуска публичного репозитория"))
+	engine_sub = engine_cmd.add_subparsers(dest="engine_command", required=True)
+	engine_update = engine_sub.add_parser("update", help=tr("поставить выпуск движка"))
+	engine_update.add_argument("--source", help=tr("каталог с выпуском (клон шаблона) вместо сети"))
+	engine_update.add_argument("--tag", help=tr("конкретный выпуск, например v2026.10.15"))
+	engine_update.add_argument("--adopt", action="store_true",
+							   help=tr("для хранилища без ENGINE.json: взять версии выпуска для всех файлов, "
+									   "прежние — в бэкап"))
+	engine_update.add_argument("--yes", action="store_true", help=tr("не спрашивать подтверждения"))
+	engine_update.add_argument("--dry-run", action="store_true", help=tr("только показать план"))
+	engine_update.add_argument("--no-commit", action="store_true",
+							   help=tr("записать файлы, но не коммитить"))
+	engine_update.add_argument("--allow-unverified", action="store_true",
+							   help=tr("ставить, даже если подпись выпуска проверить не удалось"))
+	engine_rollback = engine_sub.add_parser("rollback", help=tr("вернуть движок из последнего бэкапа"))
+	engine_rollback.add_argument("--list", action="store_true", help=tr("показать бэкапы"))
+	engine_rollback.add_argument("--dry-run", action="store_true", help=tr("только показать"))
+	engine_sub.add_parser("status", help=tr("какой выпуск стоит и что правлено руками"))
+	engine_check = engine_sub.add_parser("check", help=tr("узнать, вышел ли новый выпуск"))
+	engine_check.add_argument("--force", action="store_true", help=tr("не ждать суток"))
+	engine_mode = engine_sub.add_parser("mode", help=tr("как обновлять движок: notify, auto или off"))
+	engine_mode.add_argument("value", nargs="?", choices=("notify", "auto", "off"))
+	engine_cmd.set_defaults(func=cmd_engine)
 
 	adopt = subparsers.add_parser("adopt", help=tr("перевести локальные каталоги на симлинки"))
 	adopt.set_defaults(func=cmd_adopt)

@@ -125,6 +125,16 @@ def emit_session_context(payload: dict) -> None:
 		pass
 
 
+def engine_update_running() -> bool:
+	"""Идёт ли обновление движка: файлы bin/ в этот момент меняются, трогать их нельзя."""
+	try:
+		from ccsync_lib import engine, identity
+
+		return engine.is_locked(identity.claude_config_dir())
+	except Exception:
+		return False
+
+
 def sweep_forgotten(*, skip_current: bool) -> None:
 	"""Удалить локальные транскрипты забытых сессий. Молча — как и всё в хуке."""
 	try:
@@ -161,6 +171,13 @@ def main(argv: list[str]) -> int:
 		# Неизвестное действие — молча выходим: хук не место для ругани.
 		return 0
 
+	if engine_update_running():
+		# Обновление движка заменяет bin/ — синхронизацию пропускаем, догонит
+		# следующий хук. Контекст сессии выдаём как обычно: он ничего не пишет.
+		if action == "session-start":
+			emit_session_context(payload)
+		return 0
+
 	args, timeout, detached = ACTIONS[action]
 	command = [python_executable(), str(CCSYNC), *args]
 	# Id сессии из payload точнее, чем «самый свежий транскрипт в каталоге»:
@@ -179,6 +196,9 @@ def main(argv: list[str]) -> int:
 	if action == "session-start":
 		# Добиваем случай, когда сессию прибили жёстко и SessionEnd не отработал.
 		sweep_forgotten(skip_current=True)
+		# Не чаще раза в сутки спросит у публичного репозитория, нет ли нового
+		# выпуска движка; сам себя ограничивает и молчит при любой неудаче.
+		run_detached([python_executable(), str(CCSYNC), "--quiet", "engine", "check"])
 		emit_session_context(payload)
 	return 0
 
